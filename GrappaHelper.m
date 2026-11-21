@@ -82,7 +82,6 @@ int ALGetGrappaToken(
             NSData *clientRequestData = nil;
             SEL initSel = sel_registerName("initWithType:");
             
-            // 1. Try host session
             id session = [cls alloc];
             session = ((id (*)(id, SEL, unsigned int))objc_msgSend)(session, initSel, 1);
             if (session) {
@@ -93,7 +92,6 @@ int ALGetGrappaToken(
                 }
             }
 
-            // 2. Fallback to device session with hardcoded tokens
             if (!clientRequestData || [clientRequestData length] == 0) {
                 SEL devEstSel = sel_registerName("establishDeviceSessionWithRequestData:responseData:");
                 for (int i = 0; kAuthenticGrappaTokens[i] != NULL; i++) {
