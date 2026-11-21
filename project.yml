@@ -2,7 +2,7 @@ name: Bypassicl
 options:
   bundleIdPrefix: com.bypass.icl
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "18.0"
 targets:
   Bypassicl:
     type: application
@@ -23,7 +23,6 @@ targets:
         INFOPLIST_FILE: Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.bypass.icl.Bypassicl
         SWIFT_OBJC_BRIDGING_HEADER: "Bypassicl-Bridging-Header.h"
-        # XÓA đường dẫn Headers của XCFramework đi
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
         CODE_SIGNING_REQUIRED: "NO"
