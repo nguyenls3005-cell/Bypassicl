@@ -14,7 +14,6 @@ class AirliftService: ObservableObject {
         return docDir.appendingPathComponent("AccountsBackup")
     }
     
-    // Hàm log ra UI
     private func log(_ message: String) {
         DispatchQueue.main.async {
             self.logs += message + "\n"
@@ -22,32 +21,27 @@ class AirliftService: ObservableObject {
         }
     }
     
-    // MARK: - Khởi tạo kết nối (Pairing + Grappa + Airlift)
-    
+    // MARK: - Kết nối Airlift (Pairing + Grappa + LocalDevVPN)
     func connect() -> Bool {
         log("[*] Đang khởi tạo kết nối Airlift...")
         
-        // 1. Lấy Grappa Token
         guard let grappaToken = generateGrappaToken() else {
             log("❌ Lỗi: Không thể tạo Grappa Token.")
             return false
         }
         log("✅ Đã tạo Grappa Token (\(grappaToken.count) bytes)")
         
-        // 2. Đọc file Pairing (Yêu cầu bạn copy file pairingRecord.mobiledevicepairing vào thư mục Documents của app qua iTunes/Files)
         guard let pairingData = loadPairingFile() else {
             log("❌ Lỗi: Không tìm thấy file Pairing trong Documents.")
-            log("👉 Hãy copy file pairingRecord.mobiledevicepairing vào thư mục Documents của app.")
+            log("👉 Hãy copy file pairingRecord.mobiledevicepairing vào thư mục Documents của app qua Files/iTunes.")
             return false
         }
         log("✅ Đã tìm thấy Pairing file (\(pairingData.count) bytes)")
         
-        // 3. Gọi AirliftFFI để Init (TÊN HÀM CẦN SỬA THEO HEADER THỰC TẾ CỦA BẠN)
-        // Giả định AirliftFFI có hàm: al_init(grappa_ptr, grappa_len, pairing_ptr, pairing_len)
+        // GỌI HÀM FFI KHỞI TẠO (Bạn cần sửa al_init thành tên hàm thực tế trong AirliftFFI.h)
         let initResult = grappaToken.withUnsafeBytes { gPtr -> Int32 in
             pairingData.withUnsafeBytes { pPtr -> Int32 in
-                // SỬA al_init THÀNH HÀM THỰC TẾ TRONG AirliftFFI.h
-                // Ví dụ: al_start_airlift(...) hoặc al_connect(...)
+                // VD: return al_init_connection(...)
                 return al_init(
                     gPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), grappaToken.count,
                     pPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pairingData.count
@@ -96,9 +90,7 @@ class AirliftService: ObservableObject {
         return nil
     }
     
-    // MARK: - FFI Wrappers (File Operations)
-    // BẠN CẦN ĐỐI CHIẾU TÊN HÀM VỚI FILE AirliftFFI.h THỰC TẾ
-    
+    // MARK: - FFI Thao tác File (Sửa lại tên hàm cho khớp AirliftFFI.h)
     private func ffi_read_file(_ path: String) -> Data? {
         var outBuffer: UnsafeMutablePointer<UInt8>? = nil
         var outLength: Int = 0
@@ -112,8 +104,7 @@ class AirliftService: ObservableObject {
         return al_delete_file(path) == 0
     }
     
-    // MARK: - Nghiệp vụ
-    
+    // MARK: - Nghiệp vụ (Backup & Bypass)
     func backupAccounts() -> Bool {
         log("[*] Bắt đầu Backup...")
         let fm = FileManager.default
