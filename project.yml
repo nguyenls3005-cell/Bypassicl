@@ -15,9 +15,11 @@ targets:
           - "Payload"
           - "Frameworks"
           - "project.yml"
+          - "*.xcframework" # Bỏ qua mọi file xcframework ở thư mục gốc
+          - "*.a"
     settings:
       base:
-        SWIFT_VERSION: 5.0  # BẮT BUỘC: Ép Xcode biên dịch Swift
+        SWIFT_VERSION: 5.0
         INFOPLIST_FILE: Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.bypass.icl.Bypassicl
         SWIFT_OBJC_BRIDGING_HEADER: "Bypassicl-Bridging-Header.h"
