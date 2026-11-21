@@ -2,13 +2,13 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var airlift = AirliftService.shared
+    @State private var isConnected = false
     @State private var isProcessing = false
     
     var body: some View {
         NavigationView {
             VStack(spacing: 20) {
                 
-                // Khung hiển thị Log
                 ScrollView {
                     Text(airlift.logs)
                         .font(.system(.footnote, design: .monospaced))
@@ -20,16 +20,23 @@ struct ContentView: View {
                 .cornerRadius(10)
                 .padding(.horizontal)
                 
-                // Các nút chức năng
                 VStack(spacing: 12) {
                     Button(action: {
-                        airlift.connect()
+                        isProcessing = true
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            let ok = airlift.connect()
+                            DispatchQueue.main.async {
+                                isConnected = ok
+                                isProcessing = false
+                            }
+                        }
                     }) {
-                        Text("Kết nối Airlift")
+                        Text(isConnected ? "✅ Đã kết nối" : "🔌 Kết nối Airlift")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.blue)
+                    .tint(isConnected ? .green : .blue)
+                    .disabled(isProcessing)
                     
                     Button(action: {
                         isProcessing = true
@@ -43,6 +50,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
+                    .disabled(isProcessing || !isConnected)
                     
                     Button(action: {
                         isProcessing = true
@@ -57,21 +65,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
-                    .disabled(isProcessing)
-                    
-                    Button(action: {
-                        isProcessing = true
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            airlift.restoreAccounts()
-                            DispatchQueue.main.async { isProcessing = false }
-                        }
-                    }) {
-                        Text("♻️ Restore (Khôi phục từ Backup)")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.green)
-                    .disabled(isProcessing)
+                    .disabled(isProcessing || !isConnected)
                 }
                 .padding(.horizontal)
                 .padding(.bottom)
@@ -79,11 +73,5 @@ struct ContentView: View {
             .navigationTitle("Bypassicl")
             .navigationBarTitleDisplayMode(.inline)
         }
-    }
-}
-
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        ContentView()
     }
 }

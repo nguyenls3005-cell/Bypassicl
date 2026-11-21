@@ -6,19 +6,15 @@ class AirliftService: ObservableObject {
     
     @Published var logs: String = "=== Bypassicl Log ===\n"
     
-    // Đường dẫn hệ thống
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
     
-    // Thư mục Backup trong sandbox của App
     var backupDir: URL {
         let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return docDir.appendingPathComponent("AccountsBackup")
     }
     
-    private init() {}
-    
-    // MARK: - Hàm Log
+    // Hàm log ra UI
     private func log(_ message: String) {
         DispatchQueue.main.async {
             self.logs += message + "\n"
@@ -26,76 +22,109 @@ class AirliftService: ObservableObject {
         }
     }
     
-    // MARK: - FFI Wrappers (Cần đối chiếu với AirliftFFI.h của AirBeep)
-    // Ghi chú: Tên hàm dưới đây là chuẩn phổ biến của AirBeep/AirliftFFI. 
-    // Nếu build lỗi "cannot find in scope", bạn mở file header C ra và sửa lại tên hàm cho khớp.
+    // MARK: - Khởi tạo kết nối (Pairing + Grappa + Airlift)
     
-    private func ffi_init() -> Bool {
-        // Thường AirBeep dùng hàm al_init() hoặc airlift_init()
-        let result = al_init() 
-        return result == 0
+    func connect() -> Bool {
+        log("[*] Đang khởi tạo kết nối Airlift...")
+        
+        // 1. Lấy Grappa Token
+        guard let grappaToken = generateGrappaToken() else {
+            log("❌ Lỗi: Không thể tạo Grappa Token.")
+            return false
+        }
+        log("✅ Đã tạo Grappa Token (\(grappaToken.count) bytes)")
+        
+        // 2. Đọc file Pairing (Yêu cầu bạn copy file pairingRecord.mobiledevicepairing vào thư mục Documents của app qua iTunes/Files)
+        guard let pairingData = loadPairingFile() else {
+            log("❌ Lỗi: Không tìm thấy file Pairing trong Documents.")
+            log("👉 Hãy copy file pairingRecord.mobiledevicepairing vào thư mục Documents của app.")
+            return false
+        }
+        log("✅ Đã tìm thấy Pairing file (\(pairingData.count) bytes)")
+        
+        // 3. Gọi AirliftFFI để Init (TÊN HÀM CẦN SỬA THEO HEADER THỰC TẾ CỦA BẠN)
+        // Giả định AirliftFFI có hàm: al_init(grappa_ptr, grappa_len, pairing_ptr, pairing_len)
+        let initResult = grappaToken.withUnsafeBytes { gPtr -> Int32 in
+            pairingData.withUnsafeBytes { pPtr -> Int32 in
+                // SỬA al_init THÀNH HÀM THỰC TẾ TRONG AirliftFFI.h
+                // Ví dụ: al_start_airlift(...) hoặc al_connect(...)
+                return al_init(
+                    gPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), grappaToken.count,
+                    pPtr.baseAddress?.assumingMemoryBound(to: UInt8.self), pairingData.count
+                )
+            }
+        }
+        
+        if initResult == 0 {
+            log("✅ Kết nối Airlift thành công (qua LocalDevVPN).")
+            return true
+        } else {
+            log("❌ Lỗi khởi tạo Airlift (Code: \(initResult))")
+            return false
+        }
     }
+    
+    private func generateGrappaToken() -> Data? {
+        let maxLen = 1024
+        var buffer = [UInt8](repeating: 0, count: maxLen)
+        var outLen = 0
+        var errBuffer = [CChar](repeating: 0, count: 256)
+        
+        let result = ALGetGrappaToken(1, 0, 1, &buffer, maxLen, &outLen, &errBuffer, 256)
+        
+        if result == 0 {
+            return Data(bytes: buffer, count: outLen)
+        } else {
+            let errorMsg = String(cString: errBuffer)
+            log("Grappa Error (\(result)): \(errorMsg)")
+            return nil
+        }
+    }
+    
+    private func loadPairingFile() -> Data? {
+        let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let possiblePaths = [
+            docDir.appendingPathComponent("pairingRecord.mobiledevicepairing"),
+            docDir.appendingPathComponent("pairingRecord.plist")
+        ]
+        
+        for path in possiblePaths {
+            if let data = try? Data(contentsOf: path) {
+                return data
+            }
+        }
+        return nil
+    }
+    
+    // MARK: - FFI Wrappers (File Operations)
+    // BẠN CẦN ĐỐI CHIẾU TÊN HÀM VỚI FILE AirliftFFI.h THỰC TẾ
     
     private func ffi_read_file(_ path: String) -> Data? {
         var outBuffer: UnsafeMutablePointer<UInt8>? = nil
         var outLength: Int = 0
-        
-        // Giả định signature: int al_read_file(const char* path, uint8_t** buffer, size_t* length)
         let result = al_read_file(path, &outBuffer, &outLength)
-        
         guard result == 0, let buffer = outBuffer else { return nil }
-        defer { free(buffer) } // Giải phóng bộ nhớ C cấp phát
-        
+        defer { al_free_buffer(buffer) }
         return Data(bytes: buffer, count: outLength)
     }
     
-    private func ffi_write_file(_ path: String, data: Data) -> Bool {
-        return data.withUnsafeBytes { (rawBuffer: UnsafeRawBufferPointer) -> Bool in
-            guard let baseAddress = rawBuffer.baseAddress else { return false }
-            let uint8Ptr = baseAddress.assumingMemoryBound(to: UInt8.self)
-            
-            // Giả định signature: int al_write_file(const char* path, const uint8_t* data, size_t length)
-            let result = al_write_file(path, uint8Ptr, data.count)
-            return result == 0
-        }
-    }
-    
     private func ffi_delete_file(_ path: String) -> Bool {
-        // Giả định signature: int al_delete_file(const char* path)
-        let result = al_delete_file(path)
-        return result == 0
+        return al_delete_file(path) == 0
     }
     
-    // MARK: - Nghiệp vụ chính
-    
-    func connect() {
-        log("[*] Đang khởi tạo kết nối Airlift...")
-        if ffi_init() {
-            log("✅ Kết nối Airlift thành công (qua LocalDevVPN).")
-        } else {
-            log("❌ Lỗi khởi tạo Airlift. Hãy kiểm tra LocalDevVPN và file Pairing.")
-        }
-    }
+    // MARK: - Nghiệp vụ
     
     func backupAccounts() -> Bool {
-        log("[*] Bắt đầu quá trình Backup...")
-        
-        // Kiểm tra xem đã backup chưa để tránh ghi đè bản gốc
+        log("[*] Bắt đầu Backup...")
         let fm = FileManager.default
-        let firstFileBackup = backupDir.appendingPathComponent(targetFiles[0])
-        if fm.fileExists(atPath: firstFileBackup.path) {
-            log("✅ Bản backup đã tồn tại. Bỏ qua bước Backup.")
+        if fm.fileExists(atPath: backupDir.appendingPathComponent(targetFiles[0]).path) {
+            log("✅ Bản backup đã tồn tại. Bỏ qua.")
             return true
         }
         
-        do {
-            try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
-        } catch {
-            log("❌ Không thể tạo thư mục Backup: \(error.localizedDescription)")
-            return false
-        }
-        
+        try? fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
         var success = true
+        
         for file in targetFiles {
             let fullPath = "\(accountsDir)/\(file)"
             guard let data = ffi_read_file(fullPath) else {
@@ -103,13 +132,11 @@ class AirliftService: ObservableObject {
                 success = false
                 continue
             }
-            
-            let backupPath = backupDir.appendingPathComponent(file)
             do {
-                try data.write(to: backupPath)
+                try data.write(to: backupDir.appendingPathComponent(file))
                 log("✅ Đã backup: \(file) (\(data.count) bytes)")
             } catch {
-                log("❌ Lỗi ghi file backup \(file): \(error.localizedDescription)")
+                log("❌ Lỗi ghi backup: \(error.localizedDescription)")
                 success = false
             }
         }
@@ -118,10 +145,8 @@ class AirliftService: ObservableObject {
     
     func bypassICloud() {
         log("[*] Bắt đầu Bypass iCloud...")
-        
-        // Bắt buộc Backup trước khi xóa
         guard backupAccounts() else {
-            log("❌ HỦY BYPASS: Quá trình Backup thất bại.")
+            log("❌ HỦY: Backup thất bại, không thể xóa an toàn.")
             return
         }
         
@@ -137,34 +162,9 @@ class AirliftService: ObservableObject {
         }
         
         if successCount == targetFiles.count {
-            log("🎉 BYPASS THÀNH CÔNG! Vui lòng khởi động lại thiết bị (Reboot) để áp dụng.")
-        } else if successCount > 0 {
-            log("⚠️ Xóa không hoàn toàn (\(successCount)/3 file). Có thể do tiến trình Accounts đang chạy.")
-        }
-    }
-    
-    func restoreAccounts() {
-        log("[*] Bắt đầu Restore từ Backup...")
-        var successCount = 0
-        
-        for file in targetFiles {
-            let backupPath = backupDir.appendingPathComponent(file)
-            guard let data = try? Data(contentsOf: backupPath) else {
-                log("⚠️ Không tìm thấy bản backup của \(file).")
-                continue
-            }
-            
-            let fullPath = "\(accountsDir)/\(file)"
-            if ffi_write_file(fullPath, data: data) {
-                log("✅ Đã khôi phục: \(file)")
-                successCount += 1
-            } else {
-                log("❌ Lỗi khôi phục: \(file)")
-            }
-        }
-        
-        if successCount == targetFiles.count {
-            log("🎉 RESTORE THÀNH CÔNG! Vui lòng khởi động lại thiết bị.")
+            log("🎉 BYPASS THÀNH CÔNG! Hãy Reboot thiết bị.")
+        } else {
+            log("⚠️ Xóa không hoàn toàn (\(successCount)/3 file). Có thể tiến trình accountsd đang chạy.")
         }
     }
 }
