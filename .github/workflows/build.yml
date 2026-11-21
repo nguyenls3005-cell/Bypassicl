@@ -23,7 +23,7 @@ jobs:
           mkdir -p Frameworks/AirliftFFI.xcframework/ios-arm64/Headers
           
           # 1. Tạo Header giả
-          cat > Frameworks/AirliftFFI.xcframework/ios-arm64/Headers/AirliftFFI.h <<EOF
+          cat > Frameworks/AirliftFFI.xcframework/ios-arm64/Headers/airlift.h <<EOF
         #ifndef AirliftFFI_h
         #define AirliftFFI_h
         #include <stdint.h>
