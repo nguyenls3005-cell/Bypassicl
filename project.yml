@@ -8,12 +8,19 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: Sources
+      - path: .
+        excludes:
+          - ".github"
+          - "build"
+          - "Payload"
+          - "Frameworks"
+          - "project.yml"
     settings:
       base:
-        INFOPLIST_FILE: Sources/Info.plist
+        SWIFT_VERSION: 5.0  # BẮT BUỘC: Ép Xcode biên dịch Swift
+        INFOPLIST_FILE: Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.bypass.icl.Bypassicl
-        SWIFT_OBJC_BRIDGING_HEADER: "Sources/Bypassicl-Bridging-Header.h"
+        SWIFT_OBJC_BRIDGING_HEADER: "Bypassicl-Bridging-Header.h"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Frameworks/AirliftFFI.xcframework/ios-arm64/Headers $(SRCROOT)/Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
         CODE_SIGNING_REQUIRED: "NO"
