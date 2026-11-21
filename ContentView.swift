@@ -1,27 +1,71 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var airlift = AirliftService.shared
     @State private var isConnected = false
     @State private var isProcessing = false
+    @State private var showImporter = false
     
     var body: some View {
         NavigationView {
-            VStack(spacing: 20) {
+            VStack(spacing: 16) {
                 
+                // MARK: - Log
                 ScrollView {
                     Text(airlift.logs)
                         .font(.system(.footnote, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
+                        .padding(10)
                 }
-                .background(Color.black.opacity(0.8))
+                .background(Color.black.opacity(0.85))
                 .foregroundColor(.green)
                 .cornerRadius(10)
                 .padding(.horizontal)
                 
-                VStack(spacing: 12) {
-                    Button(action: {
+                // MARK: - PIN hiển thị khi đang pair
+                if let pin = airlift.currentPin {
+                    VStack(spacing: 6) {
+                        Text("Nhập PIN này trên máy target")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Text(pin)
+                            .font(.system(size: 42, weight: .bold, design: .monospaced))
+                            .foregroundColor(.green)
+                    }
+                    .padding(.vertical, 8)
+                }
+                
+                // MARK: - Nút chức năng
+                VStack(spacing: 10) {
+                    
+                    // 1. Import Pairing File
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("Import Pairing File", systemImage: "doc.badge.plus")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.purple)
+                    .disabled(isProcessing || airlift.isPairing)
+                    
+                    // 2. Pair on Device (iOS 27) - Bonjour
+                    Button {
+                        airlift.startPairingOnDevice()
+                    } label: {
+                        Label(
+                            airlift.isPairing ? "Đang Pairing... (chờ PIN)" : "Pair on Device (iOS 27)",
+                            systemImage: airlift.isPairing ? "antenna.radiowaves.left.and.right" : "link"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(airlift.isPairing ? .orange : .cyan)
+                    .disabled(isProcessing || airlift.isPairing)
+                    
+                    // 3. Kết nối
+                    Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
                             let ok = airlift.connect()
@@ -30,48 +74,67 @@ struct ContentView: View {
                                 isProcessing = false
                             }
                         }
-                    }) {
-                        Text(isConnected ? "✅ Đã kết nối" : "🔌 Kết nối Airlift")
-                            .frame(maxWidth: .infinity)
+                    } label: {
+                        Label(
+                            isConnected ? "Đã kết nối" : "Kết nối Airlift",
+                            systemImage: isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle"
+                        )
+                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(isConnected ? .green : .blue)
-                    .disabled(isProcessing)
+                    .disabled(isProcessing || airlift.isPairing)
                     
-                    Button(action: {
+                    // 4. Chỉ Backup
+                    Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
-                            airlift.backupAccounts()
+                            _ = airlift.backupAccounts()
                             DispatchQueue.main.async { isProcessing = false }
                         }
-                    }) {
-                        Text("📦 Chỉ Backup (An toàn)")
+                    } label: {
+                        Label("Chỉ Backup (An toàn)", systemImage: "externaldrive.badge.timemachine")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
-                    .disabled(isProcessing || !isConnected)
+                    .disabled(isProcessing || !isConnected || airlift.isPairing)
                     
-                    Button(action: {
+                    // 5. Bypass
+                    Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
                             airlift.bypassICloud()
                             DispatchQueue.main.async { isProcessing = false }
                         }
-                    }) {
-                        Text("🚀 BYPASS iCLOUD (Xóa Accounts3)")
+                    } label: {
+                        Label("BYPASS iCLOUD (Ghi đè Accounts)", systemImage: "flame.fill")
                             .frame(maxWidth: .infinity)
-                            .bold()
+                            .fontWeight(.bold)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
-                    .disabled(isProcessing || !isConnected)
+                    .disabled(isProcessing || !isConnected || airlift.isPairing)
                 }
                 .padding(.horizontal)
-                .padding(.bottom)
+                .padding(.bottom, 12)
             }
             .navigationTitle("Bypassicl")
             .navigationBarTitleDisplayMode(.inline)
+            .fileImporter(
+                isPresented: $showImporter,
+                allowedContentTypes: [.data, .item, .propertyList],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first {
+                        airlift.importPairingFile(from: url)
+                    }
+                case .failure(let error):
+                    airlift.logs += "❌ File picker error: \(error.localizedDescription)\n"
+                }
+            }
         }
     }
 }
