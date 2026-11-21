@@ -1,0 +1,48 @@
+name: Build Unsigned IPA
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: 1. Checkout Code
+      uses: actions/checkout@v4
+
+    - name: 2. Cài đặt XcodeGen
+      run: brew install xcodegen
+
+    - name: 3. Tạo Xcode Project
+      run: xcodegen generate
+
+    - name: 4. Build App (Unsigned)
+      run: |
+        xcodebuild -project Bypassicl.xcodeproj \
+                   -scheme Bypassicl \
+                   -sdk iphoneos \
+                   -configuration Release \
+                   -derivedDataPath ./build \
+                   CODE_SIGNING_ALLOWED=NO \
+                   CODE_SIGNING_REQUIRED=NO \
+                   CODE_SIGN_IDENTITY="" \
+                   build
+
+    - name: 5. Đóng gói IPA & Ký Ad-hoc
+      run: |
+        mkdir -p Payload
+        cp -R ./build/Build/Products/Release-iphoneos/Bypassicl.app Payload/
+        
+        # Ký ad-hoc để giữ nguyên Entitlements (Quan trọng để chạy quyền root)
+        codesign -f -s - --entitlements Bypassicl.entitlements Payload/Bypassicl.app || echo "Codesign failed, continuing..."
+        
+        zip -r Bypassicl.ipa Payload
+
+    - name: 6. Upload IPA Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Bypassicl-Unsigned-IPA
+        path: Bypassicl.ipa
