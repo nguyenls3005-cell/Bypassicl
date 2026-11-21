@@ -22,9 +22,24 @@
     <array>
         <string>UIInterfaceOrientationPortrait</string>
     </array>
+    
+    <!-- Cho phép share file qua Files app -->
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <true/>
+    
+    <!-- Quyền Local Network (bắt buộc để Bonjour hoạt động) -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Bypassicl cần truy cập mạng cục bộ để pair với thiết bị qua Bonjour.</string>
+    
+    <!-- Các service Bonjour mà app sẽ dùng -->
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_remotepairing._tcp</string>
+        <string>_companion-link._tcp</string>
+        <string>_airplay._tcp</string>
+        <string>_rp-tunnel._tcp</string>
+    </array>
 </dict>
 </plist>
