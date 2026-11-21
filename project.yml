@@ -15,7 +15,7 @@ targets:
           - "Payload"
           - "Frameworks"
           - "project.yml"
-          - "*.xcframework" # Bỏ qua mọi file xcframework ở thư mục gốc
+          - "*.xcframework"
           - "*.a"
     settings:
       base:
@@ -23,7 +23,8 @@ targets:
         INFOPLIST_FILE: Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.bypass.icl.Bypassicl
         SWIFT_OBJC_BRIDGING_HEADER: "Bypassicl-Bridging-Header.h"
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Frameworks/AirliftFFI.xcframework/ios-arm64/Headers $(SRCROOT)/Frameworks"
+        # XÓA đường dẫn Headers của XCFramework đi
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
         CODE_SIGNING_REQUIRED: "NO"
         CODE_SIGN_IDENTITY: ""
