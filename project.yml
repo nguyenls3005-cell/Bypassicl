@@ -1,0 +1,27 @@
+name: Bypassicl
+options:
+  bundleIdPrefix: com.bypass.icl
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  Bypassicl:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        INFOPLIST_FILE: Sources/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.bypass.icl.Bypassicl
+        SWIFT_OBJC_BRIDGING_HEADER: "Sources/Bypassicl-Bridging-Header.h"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/Frameworks/AirliftFFI.xcframework/ios-arm64/Headers $(SRCROOT)/Frameworks"
+        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_ALLOWED: "NO"
+        ENABLE_BITCODE: "NO"
+        ONLY_ACTIVE_ARCH: "NO"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    dependencies:
+      - framework: Frameworks/AirliftFFI.xcframework
+        embed: false
