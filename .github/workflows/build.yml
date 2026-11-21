@@ -13,8 +13,71 @@ jobs:
     - name: 1. Checkout Code
       uses: actions/checkout@v4
 
-    - name: 2. Cài đặt XcodeGen
-      run: brew install xcodegen
+    - name: 2. Cài XcodeGen & Tạo AirliftFFI Giả (Nếu thiếu)
+      run: |
+        brew install xcodegen
+        
+        # Kiểm tra xem đã có framework thật chưa. Nếu chưa có thì tạo bản giả để build không bị lỗi.
+        if [ ! -d "Frameworks/AirliftFFI.xcframework" ]; then
+          echo "⚠️ Không tìm thấy AirliftFFI.xcframework. Đang tạo bản giả để test build..."
+          mkdir -p Frameworks/AirliftFFI.xcframework/ios-arm64/Headers
+          
+          # 1. Tạo Header giả
+          cat > Frameworks/AirliftFFI.xcframework/ios-arm64/Headers/AirliftFFI.h <<EOF
+        #ifndef AirliftFFI_h
+        #define AirliftFFI_h
+        #include <stdint.h>
+        #include <stddef.h>
+        int al_init(const uint8_t* grappa, size_t grappa_len, const uint8_t* pairing, size_t pairing_len);
+        int al_read_file(const char* path, uint8_t** out_buf, size_t* out_len);
+        int al_delete_file(const char* path);
+        void al_free_buffer(uint8_t* buf);
+        #endif
+        EOF
+          
+          # 2. Tạo Static Lib giả (trả về lỗi -1)
+          cat > dummy.c <<EOF
+        #include <stdint.h>
+        #include <stddef.h>
+        int al_init(const uint8_t* g, size_t gl, const uint8_t* p, size_t pl) { return -1; }
+        int al_read_file(const char* path, uint8_t** out_buf, size_t* out_len) { return -1; }
+        int al_delete_file(const char* path) { return -1; }
+        void al_free_buffer(uint8_t* buf) {}
+        EOF
+          
+          xcrun -sdk iphoneos clang -arch arm64 -c dummy.c -o dummy.o
+          xcrun -sdk iphoneos ar rcs libAirliftFFI.a dummy.o
+          mv libAirliftFFI.a Frameworks/AirliftFFI.xcframework/ios-arm64/
+          
+          # 3. Tạo Info.plist cho XCFramework
+          cat > Frameworks/AirliftFFI.xcframework/Info.plist <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>AvailableLibraries</key>
+            <array>
+                <dict>
+                    <key>LibraryIdentifier</key>
+                    <string>ios-arm64</string>
+                    <key>LibraryPath</key>
+                    <string>libAirliftFFI.a</string>
+                    <key>SupportedArchitectures</key>
+                    <array>
+                        <string>arm64</string>
+                    </array>
+                    <key>SupportedPlatform</key>
+                    <string>ios</string>
+                </dict>
+            </array>
+            <key>CFBundlePackageType</key>
+            <string>XFWK</string>
+            <key>XCFrameworkFormatVersion</key>
+            <string>1.0</string>
+        </dict>
+        </plist>
+        EOF
+        fi
 
     - name: 3. Tạo Xcode Project
       run: xcodegen generate
@@ -36,7 +99,6 @@ jobs:
         mkdir -p Payload
         cp -R ./build/Build/Products/Release-iphoneos/Bypassicl.app Payload/
         
-        # Ký ad-hoc để giữ nguyên Entitlements (Quan trọng để chạy quyền root)
         codesign -f -s - --entitlements Bypassicl.entitlements Payload/Bypassicl.app || echo "Codesign failed, continuing..."
         
         zip -r Bypassicl.ipa Payload
