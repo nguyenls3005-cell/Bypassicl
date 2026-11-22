@@ -17,12 +17,10 @@ jobs:
       run: |
         brew install xcodegen
         
-        # Kiểm tra xem đã có framework thật chưa. Nếu chưa có thì tạo bản giả để build không bị lỗi.
         if [ ! -d "Frameworks/AirliftFFI.xcframework" ]; then
-          echo "⚠️ Không tìm thấy AirliftFFI.xcframework. Đang tạo bản giả để test build..."
+          echo "⚠️ Không tìm thấy AirliftFFI.xcframework. Đang tạo bản giả..."
           mkdir -p Frameworks/AirliftFFI.xcframework/ios-arm64/Headers
           
-          # 1. Tạo Header giả
           cat > Frameworks/AirliftFFI.xcframework/ios-arm64/Headers/airlift.h <<EOF
         #ifndef AirliftFFI_h
         #define AirliftFFI_h
@@ -35,7 +33,6 @@ jobs:
         #endif
         EOF
           
-          # 2. Tạo Static Lib giả (trả về lỗi -1)
           cat > dummy.c <<EOF
         #include <stdint.h>
         #include <stddef.h>
@@ -49,7 +46,6 @@ jobs:
           xcrun -sdk iphoneos ar rcs libAirliftFFI.a dummy.o
           mv libAirliftFFI.a Frameworks/AirliftFFI.xcframework/ios-arm64/
           
-          # 3. Tạo Info.plist cho XCFramework
           cat > Frameworks/AirliftFFI.xcframework/Info.plist <<EOF
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -94,14 +90,11 @@ jobs:
                    CODE_SIGN_IDENTITY="" \
                    build
 
-    - name: 5. Đóng gói IPA & Ký Ad-hoc
+    - name: 5. Đóng gói IPA (Không Codesign để Sideloadly tự ký)
       run: |
         mkdir -p Payload
         cp -R ./build/Build/Products/Release-iphoneos/Bypassicl.app Payload/
-        
-        codesign -f -s - --entitlements Bypassicl.entitlements Payload/Bypassicl.app || echo "Codesign failed, continuing..."
-        
-        zip -r Bypassicl.ipa Payload
+        zip -r Bypassicl.ipa Payload/
 
     - name: 6. Upload IPA Artifact
       uses: actions/upload-artifact@v4
