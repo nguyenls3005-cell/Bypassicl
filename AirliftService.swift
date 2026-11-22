@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Final & Perfect)
+// AirliftService.swift — Bypassicl (Good & Evil Bypass)
 // ============================================================
 
 import Foundation
@@ -65,7 +65,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // QUÉT VPN REALTIME
+    // QUÉT VPN LOCALDEV REALTIME
     // ============================================================
     private func startVPNMonitor() {
         checkVPNNow()
@@ -389,26 +389,26 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // BYPASS (Ác - Phá DB, Văng Settings, Cấm Login)
+    // BYPASS ÁC: CHẶN FMI, KHÓA MÁY
     // ============================================================
-    func bypassICloud() {
+    func evilBypass() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
-            log("❌ Bypass failed: Missing Pairing File.")
+            log("❌ Bypass Ác failed: Missing Pairing File.")
             return
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Bypass (Phá DB)...")
+        log("[*] Bắt đầu Bypass Ác (Khóa Máy, Chặn FMI)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let fm = FileManager.default
             
-            // 1. Backup file gốc
+            // 1. Backup file gốc trước khi phá
             try? fm.createDirectory(at: self.backupDir, withIntermediateDirectories: true)
             if !self.hasCompleteBackup {
-                DispatchQueue.main.async { self.log("[*] Đang backup 3 file gốc...") }
+                DispatchQueue.main.async { self.log("[*] Đang backup file gốc...") }
                 for file in self.targetFiles {
                     let path = "\(self.accountsDir)/\(file)"
                     if let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path) {
@@ -441,11 +441,11 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             
             DispatchQueue.main.async {
                 if success {
-                    self.log("🎉 BYPASS THÀNH CÔNG! Apple ID bị xóa sạch, cấm login.")
-                    self.alertMessage = "Bypass Thành Công! Hãy vuốt tắt app Cài đặt (Settings) và mở lại."
+                    self.log("🎉 BYPASS ÁC THÀNH CÔNG! Máy đã bị khóa (Block FMI).")
+                    self.alertMessage = "Bypass Ác Thành Công! Máy đã bị khóa, chặn FMI. Vui lòng vuốt tắt app Cài đặt."
                 } else {
-                    self.log("❌ Bypass thất bại.")
-                    self.alertMessage = "Bypass thất bại."
+                    self.log("❌ Bypass Ác thất bại.")
+                    self.alertMessage = "Bypass Ác thất bại."
                 }
                 self.isProcessing = false
                 self.showAlert = true
@@ -457,17 +457,17 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // RESTORE (Thiện - DB Sạch, Cho Phép Login)
+    // BYPASS THIỆN: LOGIN ACC KHÁC
     // ============================================================
-    func restoreOriginalAccounts() {
+    func goodBypass() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
-            log("❌ Restore failed: Missing Pairing File.")
+            log("❌ Bypass Thiện failed: Missing Pairing File.")
             return
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Restore (Tạo DB sạch)...")
+        log("[*] Bắt đầu Bypass Thiện (Xóa Acc, Cho phép Login)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -498,11 +498,11 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             
             DispatchQueue.main.async {
                 if success {
-                    self.log("✅ RESTORE HOÀN TẤT! Đã tạo DB sạch, cho phép login.")
-                    self.alertMessage = "Restore Thành Công! Hãy vuốt tắt app Cài đặt (Settings) và mở lại."
+                    self.log("✅ BYPASS THIỆN THÀNH CÔNG! Đã xóa Acc cũ, cho phép login acc khác.")
+                    self.alertMessage = "Bypass Thiện Thành Công! Hãy vuốt tắt app Cài đặt (Settings) và mở lại để đăng nhập acc mới."
                 } else {
-                    self.log("❌ Restore thất bại.")
-                    self.alertMessage = "Restore thất bại."
+                    self.log("❌ Bypass Thiện thất bại.")
+                    self.alertMessage = "Bypass Thiện thất bại."
                 }
                 self.isProcessing = false
                 self.showAlert = true
