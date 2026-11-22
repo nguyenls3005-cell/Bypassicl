@@ -21,7 +21,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     @Published var pairingFilePath: String? = nil
     @Published var lastDeviceName: String? = nil
     
-    // UI State
     @Published var isProcessing = false
     @Published var showAlert = false
     @Published var alertMessage = ""
@@ -52,7 +51,8 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         registerBackgroundTask()
     }
     
-    private func log(_ message: String) {
+    // FIX: Bỏ private để ContentView có thể gọi
+    func log(_ message: String) {
         self.logs += message + "\n"
         print(message)
     }
@@ -335,7 +335,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // BYPASS ICLOUD (Infinite Verify Loop)
+    // BYPASS ICLOUD
     // ============================================================
     func bypassICloud() {
         guard !isProcessing else { return }
@@ -380,7 +380,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 DispatchQueue.main.async { self.log("⏳ Đang ghi đè file rỗng...") }
                 _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: tmp.path, targetDir: self.accountsDir)
                 
-                Thread.sleep(forTimeInterval: 2.0) // Đợi 2s cho FS flush
+                Thread.sleep(forTimeInterval: 2.0)
                 
                 var allEmpty = true
                 for file in self.targetFiles {
@@ -410,7 +410,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // RESTORE (Infinite Loop + Verify + Xóa sạch Apple ID)
+    // RESTORE
     // ============================================================
     func restoreOriginalAccounts() {
         guard !isProcessing else { return }
