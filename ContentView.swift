@@ -6,6 +6,8 @@ struct ContentView: View {
     @State private var isConnected = false
     @State private var isProcessing = false
     @State private var showImporter = false
+    @State private var showManualPathAlert = false
+    @State private var manualPathInput = ""
     
     var body: some View {
         NavigationView {
@@ -40,15 +42,28 @@ struct ContentView: View {
                 VStack(spacing: 10) {
                     
                     // 1. Import Pairing File
-                    Button {
-                        showImporter = true
-                    } label: {
-                        Label("Import Pairing File", systemImage: "doc.badge.plus")
-                            .frame(maxWidth: .infinity)
+                    HStack(spacing: 8) {
+                        Button {
+                            airlift.logs += "[*] Đang mở trình chọn file...\n"
+                            showImporter = true
+                        } label: {
+                            Label("Import Pairing File", systemImage: "doc.badge.plus")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.purple)
+                        .disabled(isProcessing || airlift.isPairing)
+                        
+                        Button {
+                            manualPathInput = ""
+                            showManualPathAlert = true
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.purple)
+                        .disabled(isProcessing || airlift.isPairing)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.purple)
-                    .disabled(isProcessing || airlift.isPairing)
                     
                     // 2. Pair on Device (iOS 27) - Bonjour
                     Button {
@@ -123,7 +138,7 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .fileImporter(
                 isPresented: $showImporter,
-                allowedContentTypes: [.data, .item, .propertyList],
+                allowedContentTypes: [.item],
                 allowsMultipleSelection: false
             ) { result in
                 switch result {
@@ -134,6 +149,20 @@ struct ContentView: View {
                 case .failure(let error):
                     airlift.logs += "❌ File picker error: \(error.localizedDescription)\n"
                 }
+            }
+            .alert("Nhập Pairing Thủ Công", isPresented: $showManualPathAlert) {
+                TextField("Dán đường dẫn file hoặc nội dung plist/xml", text: $manualPathInput)
+                Button("Dán từ Clipboard") {
+                    if let clip = UIPasteboard.general.string {
+                        airlift.importPairingFromTextOrPath(clip)
+                    } else {
+                        airlift.logs += "❌ Clipboard trống\n"
+                    }
+                }
+                Button("Xác nhận") {
+                    airlift.importPairingFromTextOrPath(manualPathInput)
+                }
+                Button("Hủy", role: .cancel) {}
             }
         }
     }
