@@ -2,6 +2,53 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
+private struct PressableButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.965 : 1.0)
+            .opacity(configuration.isPressed ? 0.88 : 1.0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.68), value: configuration.isPressed)
+    }
+}
+
+private struct DocumentPickerSheet: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+    let onCancel: () -> Void
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item, .data], asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onPick: (URL) -> Void
+        private let onCancel: () -> Void
+        
+        init(onPick: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first {
+                onPick(url)
+            }
+        }
+        
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var airlift = AirliftService.shared
     @State private var isImporting = false
@@ -34,6 +81,7 @@ struct ContentView: View {
                                     .foregroundColor(.primary)
                                     .clipShape(Capsule())
                             }
+                            .buttonStyle(PressableButtonStyle())
                         }
                         
                         // Trạng thái & Nút Xoá file
@@ -55,6 +103,7 @@ struct ContentView: View {
                                             .foregroundColor(.red)
                                             .padding(.vertical, 2)
                                     }
+                                    .buttonStyle(PressableButtonStyle())
                                 }
                             }
                             Spacer()
@@ -62,7 +111,7 @@ struct ContentView: View {
                         
                         // Nút Pair on Device
                         Button(action: { airlift.startPairingOnDevice() }) {
-                            Text("Pair on Device (iOS 27+)")
+                            Text(airlift.isPairing ? "Đang Pair on Device (iOS 27+)..." : "Pair on Device (iOS 27+)")
                                 .font(.subheadline.bold())
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding()
@@ -70,9 +119,37 @@ struct ContentView: View {
                                 .foregroundColor(.orange)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
+                        .buttonStyle(PressableButtonStyle())
                         .disabled(airlift.isPairing || airlift.isProcessing)
                         
-                        // NÚT IMPORT PAIRING FILE (Luôn hiển thị)
+                        // Mã PIN hiện ngay dưới nút Pair on Device (không đưa vào log)
+                        if let pin = airlift.currentPin, !pin.isEmpty {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Mã PIN ghép đôi")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.secondary)
+                                    Text("Nhập trong Settings → Developer Mode")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text(pin)
+                                    .font(.system(size: 26, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.orange)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Color.orange.opacity(0.12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color(UIColor.tertiarySystemFill))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                        
+                        // NÚT IMPORT PAIRING FILE (dùng UIDocumentPickerViewController)
                         Button(action: { isImporting = true }) {
                             Text("Import Pairing File (iOS < 27)")
                                 .font(.subheadline.bold())
@@ -82,12 +159,13 @@ struct ContentView: View {
                                 .foregroundColor(.blue)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
+                        .buttonStyle(PressableButtonStyle())
                         .disabled(airlift.isPairing || airlift.isProcessing)
                         
                         // VPN Local
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Tunnel Connection")
+                                Text("VPN local")
                                     .font(.subheadline.bold())
                                 Text("Peer 10.7.0.1")
                                     .font(.caption)
@@ -107,8 +185,9 @@ struct ContentView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                     .shadow(color: Color.black.opacity(0.05), radius: 10, x: 0, y: 5)
+                    .animation(.easeInOut(duration: 0.2), value: airlift.currentPin)
                     
-                    // 2. NÚT HÀNH ĐỘNG (Bypass nhỏ + trong suốt | Repo trong suốt ở giữa | Restore đỏ dịu liquid glass)
+                    // 2. NÚT HÀNH ĐỘNG (Bypass nhỏ + trong suốt | Repo riêng ở giữa | Restore đỏ dịu liquid glass)
                     VStack(spacing: 10) {
                         // Bypass Button (nhỏ hơn + nền trong suốt)
                         Button(action: { airlift.bypassICloud() }) {
@@ -130,17 +209,18 @@ struct ContentView: View {
                                     .stroke(Color.orange.opacity(0.35), lineWidth: 1)
                             )
                         }
+                        .buttonStyle(PressableButtonStyle())
                         .disabled(airlift.isProcessing || airlift.isPairing)
                         
-                        // Repo Button ở giữa (nền trong suốt, mở Safari)
+                        // Repo Button riêng ở giữa (trong suốt, mở Safari)
                         Button(action: { openRepoInSafari() }) {
                             HStack(spacing: 8) {
                                 Image(systemName: "arrow.up.right.square")
                                     .font(.subheadline)
-                                Text("Repo của app (GitHub)")
+                                Text("DNS chặn FMI , Apple Server")
                                     .font(.subheadline.weight(.medium))
                                 Spacer()
-                                Text("Safari")
+                                Text("NextDns")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
                             }
@@ -155,7 +235,7 @@ struct ContentView: View {
                                     .stroke(Color.primary.opacity(0.18), lineWidth: 1)
                             )
                         }
-                        .disabled(airlift.isProcessing || airlift.isPairing)
+                        .buttonStyle(PressableButtonStyle())
                         
                         // Restore Button (nhỏ hơn + đỏ dịu + liquid glass)
                         Button(action: { airlift.restoreOriginalAccounts() }) {
@@ -200,10 +280,11 @@ struct ContentView: View {
                             )
                             .shadow(color: Color(red: 0.85, green: 0.28, blue: 0.30).opacity(0.16), radius: 8, x: 0, y: 4)
                         }
+                        .buttonStyle(PressableButtonStyle())
                         .disabled(airlift.isProcessing || airlift.isPairing)
                     }
                     
-                    // 3. LOG
+                    // 3. LOG (không in PIN vào đây nữa)
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Tiến trình").font(.headline)
@@ -219,7 +300,7 @@ struct ContentView: View {
                         
                         ScrollViewReader { proxy in
                             ScrollView {
-                                Text(airlift.logs)
+                                Text(filteredLogs)
                                     .font(.system(size: 13, design: .monospaced))
                                     .foregroundColor(.primary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -244,14 +325,16 @@ struct ContentView: View {
             .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
             .navigationBarHidden(true)
             .onAppear { _ = airlift.connect() }
-            .fileImporter(
-                isPresented: $isImporting,
-                allowedContentTypes: [.data, .item],
-                allowsMultipleSelection: false
-            ) { result in
-                if case .success(let urls) = result, let url = urls.first {
-                    airlift.importPairingFile(from: url)
-                }
+            .sheet(isPresented: $isImporting) {
+                DocumentPickerSheet(
+                    onPick: { url in
+                        isImporting = false
+                        airlift.importPairingFile(from: url)
+                    },
+                    onCancel: {
+                        isImporting = false
+                    }
+                )
             }
             .sheet(isPresented: $showAboutSheet) {
                 AboutAppView(repoURL: repoURL, onOpenRepo: { openRepoInSafari() })
@@ -262,6 +345,15 @@ struct ContentView: View {
                 Text(airlift.alertMessage)
             }
         }
+    }
+    
+    private var filteredLogs: String {
+        airlift.logs
+            .components(separatedBy: .newlines)
+            .filter { line in
+                !line.contains("🔐 PIN:") && !line.contains("nhập PIN này")
+            }
+            .joined(separator: "\n")
     }
     
     private func openRepoInSafari() {
@@ -277,34 +369,30 @@ private struct AboutAppView: View {
     var body: some View {
         NavigationView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("BypassLS / Bypassicl")
+                Text("BypassLS")
                     .font(.title2.bold())
                 
-                Text("Công cụ thao tác pairing, backup/restore file Accounts3.sqlite cục bộ và theo dõi tiến trình qua Airlift.")
+                Text("Công cụ quản lý pairing, tự động backup lần đầu khi bypass, restore 3 file sqlite gốc và kết nối Airlift.")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Repository")
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                    Text(repoURL.absoluteString)
-                        .font(.footnote.monospaced())
-                        .foregroundColor(.primary)
-                        .textSelection(.enabled)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(UIColor.secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                
                 Button(action: onOpenRepo) {
-                    Label("Mở Repo bằng Safari", systemImage: "safari")
-                        .font(.subheadline.bold())
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                    HStack {
+                        Image(systemName: "link")
+                        Text("Link Repo: https://github.com/nguyenls3005-cell/Bypassicl")
+                            .font(.footnote.weight(.medium))
+                            .lineLimit(1)
+                        Spacer()
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                    .foregroundColor(.primary)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PressableButtonStyle())
                 
                 Spacer()
             }
