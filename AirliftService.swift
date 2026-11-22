@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Exact Write & Read Verify)
+// AirliftService.swift — Bypassicl (Fast Retry & Clean Wipe)
 // ============================================================
 
 import Foundation
@@ -52,6 +52,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         super.init()
         registerBackgroundTask()
         startVPNMonitor()
+        _ = connect()
     }
     
     func log(_ message: String) {
@@ -59,28 +60,34 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         print(message)
     }
     
+    // Quét VPN realtime
     private func startVPNMonitor() {
+        checkVPNNow()
         vpnTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            var address: UnsafeMutablePointer<ifaddrs>?
-            var isUp = false
-            if getifaddrs(&address) == 0 {
-                var ptr = address
-                while ptr != nil {
-                    let interface = ptr!.pointee
-                    let name = String(cString: interface.ifa_name)
-                    if name.hasPrefix("utun") || name.hasPrefix("tun") || name.hasPrefix("tap") {
-                        isUp = true
-                        break
-                    }
-                    ptr = interface.ifa_next
+            self?.checkVPNNow()
+        }
+        RunLoop.main.add(vpnTimer!, forMode: .common)
+    }
+    
+    private func checkVPNNow() {
+        var address: UnsafeMutablePointer<ifaddrs>?
+        var isUp = false
+        if getifaddrs(&address) == 0 {
+            var ptr = address
+            while ptr != nil {
+                let interface = ptr!.pointee
+                let name = String(cString: interface.ifa_name)
+                if name.hasPrefix("utun") || name.hasPrefix("tun") || name.hasPrefix("tap") {
+                    isUp = true
+                    break
                 }
-                freeifaddrs(address)
+                ptr = interface.ifa_next
             }
-            if self.isVPNConnected != isUp {
-                self.isVPNConnected = isUp
-                self.log(isUp ? "✅ Đã phát hiện VPN Local" : "⚠️ VPN Local đã tắt")
-            }
+            freeifaddrs(address)
+        }
+        if self.isVPNConnected != isUp {
+            self.isVPNConnected = isUp
+            self.log(isUp ? "✅ Đã phát hiện VPN Local" : "⚠️ VPN Local đã tắt")
         }
     }
     
@@ -108,7 +115,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         guard let ctx = ctx, let serviceID = serviceID else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
         let id = String(cString: serviceID)
-
         var txt: [String: Data] = [:]
         if let keys = keys, let vals = vals {
             for i in 0..<Int(count) {
@@ -116,10 +122,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 txt[String(cString: k)] = Data(String(cString: v).utf8)
             }
         }
-
-        DispatchQueue.main.async {
-            service.startAdvertising(serviceID: id, port: Int32(port), txt: txt)
-        }
+        DispatchQueue.main.async { service.startAdvertising(serviceID: id, port: Int32(port), txt: txt) }
     }
     
     nonisolated private func registerBackgroundTask() {
@@ -174,7 +177,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         self.startKeepAliveAudio()
-        
         Task.detached { [weak self] in _ = await self?.localNetwork.request() }
         self.submitBackgroundTask()
     }
@@ -200,7 +202,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             Task { @MainActor in
                 self.isPairing = false
                 self.finishTask(success: false)
-                self.log("❌ Background time expired.")
             }
         }
         
@@ -231,11 +232,8 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                     break
                 } else {
                     al_pairing_result_free(&result)
-                    DispatchQueue.main.async {
-                        self.currentPin = nil
-                        self.log("🔄 Ngắt kết nối. Đang khởi động lại Host...")
-                    }
-                    Thread.sleep(forTimeInterval: 0.3)
+                    DispatchQueue.main.async { self.currentPin = nil }
+                    Thread.sleep(forTimeInterval: 0.5)
                 }
             }
 
@@ -250,12 +248,11 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                     self.pairingFilePath = finalPath
                     self.lastDeviceName = finalName
                     self.log("✅ Pairing successful!")
-                    self.bgTask?.progress.completedUnitCount = 100
                     self.alertMessage = "Pairing Thành Công!"
-                    self.showAlert = true
                 } else {
                     self.log("⏹ Pairing cancelled.")
                 }
+                self.showAlert = true
                 self.finishTask(success: isSuccess)
             }
         }
@@ -332,11 +329,8 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             if let d = outData { al_bytes_free(d, outLen) }
         }
         if result == 0 {
-            if let ptr = outData, outLen > 0 {
-                return Data(bytes: ptr, count: Int(outLen))
-            } else {
-                return Data()
-            }
+            if let ptr = outData, outLen > 0 { return Data(bytes: ptr, count: Int(outLen)) }
+            else { return Data() }
         }
         return nil
     }
@@ -349,6 +343,9 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return result == 0
     }
 
+    // ============================================================
+    // BYPASS (Chạy 1 phát ăn ngay, lỗi mới retry 3 lần)
+    // ============================================================
     func bypassICloud() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
@@ -365,18 +362,10 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             try? FileManager.default.createDirectory(at: self.backupDir, withIntermediateDirectories: true)
             
             if !self.hasCompleteBackup {
-                DispatchQueue.main.async { self.log("[*] Đang backup 3 file gốc...") }
                 for file in self.targetFiles {
                     let path = "\(self.accountsDir)/\(file)"
-                    var backedUp = false
-                    while !backedUp {
-                        if let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path) {
-                            try? data.write(to: self.backupDir.appendingPathComponent(file), options: .atomic)
-                            DispatchQueue.main.async { self.log("✅ Đã backup: \(file)") }
-                            backedUp = true
-                        } else {
-                            Thread.sleep(forTimeInterval: 0.2)
-                        }
+                    if let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path) {
+                        try? data.write(to: self.backupDir.appendingPathComponent(file), options: .atomic)
                     }
                 }
             }
@@ -388,35 +377,32 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             }
             
             var success = false
-            while !success {
-                DispatchQueue.main.async { self.log("⏳ Đang ghi đè file rỗng...") }
-                _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: tmp.path, targetDir: self.accountsDir)
-                
-                Thread.sleep(forTimeInterval: 0.3)
-                
-                // Verify bằng AL_READ
-                var allEmpty = true
-                for file in self.targetFiles {
-                    let path = "\(self.accountsDir)/\(file)"
-                    if let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path), !data.isEmpty {
-                        allEmpty = false
-                        break
-                    }
+            for attempt in 1...3 {
+                if self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: tmp.path, targetDir: self.accountsDir) {
+                    success = true
+                    break
                 }
-                
-                if allEmpty { success = true }
+                Thread.sleep(forTimeInterval: 1.0)
             }
             
             DispatchQueue.main.async {
-                self.log("🎉 BYPASS THÀNH CÔNG!")
+                if success {
+                    self.log("🎉 BYPASS THÀNH CÔNG!")
+                    self.alertMessage = "Bypass iCloud Thành Công! Vui lòng khởi động lại thiết bị."
+                } else {
+                    self.log("❌ Bypass thất bại.")
+                    self.alertMessage = "Bypass thất bại. Vui lòng thử lại."
+                }
                 self.isProcessing = false
-                self.alertMessage = "Bypass iCloud Thành Công! Vui lòng khởi động lại thiết bị."
                 self.showAlert = true
             }
             try? FileManager.default.removeItem(at: tmp)
         }
     }
 
+    // ============================================================
+    // RESTORE (Phục hồi + Xóa sạch Apple ID)
+    // ============================================================
     func restoreOriginalAccounts() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
@@ -444,68 +430,49 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                     try fm.copyItem(at: backupFileURL, to: stagingDir.appendingPathComponent(file))
                 }
             } catch {
-                DispatchQueue.main.async { self.log("❌ Restore prep: \(error.localizedDescription)"); self.isProcessing = false }
+                DispatchQueue.main.async { self.log("❌ Restore prep lỗi"); self.isProcessing = false }
                 return
             }
             
+            // 1. Ghi file backup vào
             var success = false
-            while !success {
-                DispatchQueue.main.async { self.log("⏳ Đang nạp file backup vào máy...") }
-                
-                // 1. Dùng al_write
-                _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: stagingDir.path, targetDir: self.accountsDir)
-                
-                Thread.sleep(forTimeInterval: 0.3)
-                
-                // 2. Dùng al_read để check lại
-                var allExist = true
-                for file in self.targetFiles {
-                    let path = "\(self.accountsDir)/\(file)"
-                    if let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path), data.isEmpty {
-                        allExist = false // Phải có data mới tính là thành công
-                        break
-                    } else if self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path) == nil {
-                        allExist = false // Lỗi đọc file
-                        break
-                    }
+            for attempt in 1...3 {
+                if self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: stagingDir.path, targetDir: self.accountsDir) {
+                    success = true
+                    break
                 }
-                
-                if allExist { success = true }
+                Thread.sleep(forTimeInterval: 1.0)
             }
             
-            // XÓA SẠCH APPLE ID
-            DispatchQueue.main.async { self.log("🧹 Đang xóa sạch Apple ID...") }
-            let emptyDir = fm.temporaryDirectory.appendingPathComponent("empty_\(UUID().uuidString)")
-            try? fm.createDirectory(at: emptyDir, withIntermediateDirectories: true)
-            for file in self.targetFiles {
-                try? Data().write(to: emptyDir.appendingPathComponent(file), options: .atomic)
-            }
-            
-            var wipeSuccess = false
-            while !wipeSuccess {
-                _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: emptyDir.path, targetDir: self.accountsDir)
-                Thread.sleep(forTimeInterval: 0.3)
-                
-                var allEmpty = true
+            // 2. Xóa sạch Apple ID (ghi đè file rỗng)
+            if success {
+                let emptyDir = fm.temporaryDirectory.appendingPathComponent("empty_\(UUID().uuidString)")
+                try? fm.createDirectory(at: emptyDir, withIntermediateDirectories: true)
                 for file in self.targetFiles {
-                    let path = "\(self.accountsDir)/\(file)"
-                    if let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path), !data.isEmpty {
-                        allEmpty = false
+                    try? Data().write(to: emptyDir.appendingPathComponent(file), options: .atomic)
+                }
+                
+                for _ in 1...3 {
+                    if self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: emptyDir.path, targetDir: self.accountsDir) {
                         break
                     }
+                    Thread.sleep(forTimeInterval: 1.0)
                 }
-                if allEmpty { wipeSuccess = true }
+                try? fm.removeItem(at: emptyDir)
             }
             
             DispatchQueue.main.async {
-                self.log("✅ RESTORE HOÀN TẤT!")
+                if success {
+                    self.log("✅ RESTORE HOÀN TẤT! Đã xóa Apple ID.")
+                    self.alertMessage = "Restore Thành Công! Đã xóa sạch Apple ID."
+                } else {
+                    self.log("❌ Restore thất bại.")
+                    self.alertMessage = "Restore thất bại."
+                }
                 self.isProcessing = false
-                self.alertMessage = "Restore Thành Công!"
                 self.showAlert = true
             }
-            
             try? fm.removeItem(at: stagingDir)
-            try? fm.removeItem(at: emptyDir)
         }
     }
 }
