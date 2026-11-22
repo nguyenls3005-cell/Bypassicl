@@ -64,7 +64,7 @@ struct ContentView: View {
                 // MARK: - PIN hiển thị khi đang pair
                 if let pin = airlift.currentPin {
                     VStack(spacing: 6) {
-                        Text("Nhập PIN này trên máy target")
+                        Text("Enter this pin on your iPhone")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(pin)
@@ -79,7 +79,7 @@ struct ContentView: View {
                     
                     // 1. Import Pairing File
                     Button {
-                        airlift.logs += "[*] Mở Document Picker...\n"
+                        airlift.logs += "[*] Open Document Picker...\n"
                         showImporter = true
                     } label: {
                         Label("Import Pairing File", systemImage: "doc.badge.plus")
@@ -94,7 +94,7 @@ struct ContentView: View {
                         airlift.startPairingOnDevice()
                     } label: {
                         Label(
-                            airlift.isPairing ? "Đang Pairing... (chờ PIN)" : "Pair on Device (iOS 27)",
+                            airlift.isPairing ? " Pairing... (Wait PIN)" : "Pair on Device (iOS 27)",
                             systemImage: airlift.isPairing ? "antenna.radiowaves.left.and.right" : "link"
                         )
                         .frame(maxWidth: .infinity)
@@ -132,14 +132,14 @@ struct ContentView: View {
                             DispatchQueue.main.async { isProcessing = false }
                         }
                     } label: {
-                        Label("Restore Tài Khoản Gốc", systemImage: "arrow.counterclockwise.circle.fill")
+                        Label("Restore to original", systemImage: "arrow.counterclockwise.circle.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
                     .disabled(isProcessing || !isConnected || airlift.isPairing)
                     
-                    // 5. Bypass (tự backup lần đầu rồi ghi đè)
+                    // 5. Bypass (auto backup at first and overwrite)
                     Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
@@ -147,7 +147,7 @@ struct ContentView: View {
                             DispatchQueue.main.async { isProcessing = false }
                         }
                     } label: {
-                        Label("BYPASS iCLOUD (Tự Backup & Ghi đè)", systemImage: "flame.fill")
+                        Label("Bypass iCloud (Auto Backup & Overwrite)", systemImage: "flame.fill")
                             .frame(maxWidth: .infinity)
                             .fontWeight(.bold)
                     }
@@ -158,7 +158,7 @@ struct ContentView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 12)
             }
-            .navigationTitle("Bypassicl")
+            .navigationTitle("LSTool")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showImporter) {
                 DocumentPickerView(
@@ -168,7 +168,7 @@ struct ContentView: View {
                     },
                     onCancel: {
                         showImporter = false
-                        airlift.logs += "⏹ Đã hủy chọn file\n"
+                        airlift.logs += "⏹ Cancle chose file\n"
                     }
                 )
             }
