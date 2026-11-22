@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Final Fixed)
+// AirliftService.swift — Bypassicl (Final Logic Fix)
 // ============================================================
 
 import Foundation
@@ -35,7 +35,10 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     
     private let localNetwork = LocalNetworkAuthorization()
     private let accountsDir = "/var/mobile/Library/Accounts"
+    private let prefsDir = "/var/mobile/Library/Preferences"
+    
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
+    private let plistFiles = ["com.apple.accountsd.plist", "com.apple.mobilemeaccounts.plist", "com.apple.accounts.plist", "com.apple.appleaccount.plist"]
     
     var backupDir: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("AccountsBackup")
@@ -60,9 +63,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         print(message)
     }
     
-    // ============================================================
-    // QUÉT VPN LOCALDEV CHUẨN (Check IP 10.7.x.x)
-    // ============================================================
     private func startVPNMonitor() {
         checkVPNNow()
         vpnTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -74,30 +74,23 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     private func checkVPNNow() {
         var address: UnsafeMutablePointer<ifaddrs>?
         var isUp = false
-        
         if getifaddrs(&address) == 0 {
             var ptr = address
             while ptr != nil {
                 let interface = ptr!.pointee
                 let name = String(cString: interface.ifa_name)
                 let family = interface.ifa_addr.pointee.sa_family
-                
                 if name.hasPrefix("utun") && family == UInt8(AF_INET) {
                     var addr = interface.ifa_addr.pointee
                     var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                     getnameinfo(&addr, socklen_t(interface.ifa_addr.pointee.sa_len), &hostname, socklen_t(hostname.count), nil, socklen_t(0), NI_NUMERICHOST)
                     let ip = String(cString: hostname)
-                    
-                    if ip.hasPrefix("10.7.") {
-                        isUp = true
-                        break
-                    }
+                    if ip.hasPrefix("10.7.") { isUp = true; break }
                 }
                 ptr = interface.ifa_next
             }
             freeifaddrs(address)
         }
-        
         if self.isVPNConnected != isUp {
             self.isVPNConnected = isUp
             self.log(isUp ? "✅ Đã phát hiện VPN LocalDev" : "⚠️ VPN LocalDev đã tắt")
@@ -365,7 +358,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // BYPASS: Ghi file rác (0xFF) phá DB
+    // BYPASS: XÓA SẠCH ACCOUNT & PLIST
     // ============================================================
     func bypassICloud() {
         guard !isProcessing else { return }
@@ -375,13 +368,14 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Bypass (Backup & Corrupt)...")
+        log("[*] Bắt đầu Bypass (Wipe Accounts & Plists)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let fm = FileManager.default
-            try? fm.createDirectory(at: self.backupDir, withIntermediateDirectories: true)
             
+            // 1. Backup file gốc
+            try? fm.createDirectory(at: self.backupDir, withIntermediateDirectories: true)
             if !self.hasCompleteBackup {
                 for file in self.targetFiles {
                     let path = "\(self.accountsDir)/\(file)"
@@ -391,40 +385,45 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 }
             }
             
+            // 2. Tạo file rác 0xFF 1MB đè nát SQLite
             let garbageDir = fm.temporaryDirectory.appendingPathComponent("garbage_\(UUID().uuidString)")
             try? fm.createDirectory(at: garbageDir, withIntermediateDirectories: true)
-            
-            let garbageData = Data(repeating: 0xFF, count: 1024) // Rác 0xFF
+            let garbageData = Data(repeating: 0xFF, count: 1024 * 1024)
             for file in self.targetFiles {
                 try? garbageData.write(to: garbageDir.appendingPathComponent(file), options: .atomic)
             }
             
-            var success = false
-            for attempt in 1...3 {
-                if self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: garbageDir.path, targetDir: self.accountsDir) {
-                    success = true
-                    break
-                }
-                Thread.sleep(forTimeInterval: 0.5)
+            // 3. Ghi đè SQLite
+            _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: garbageDir.path, targetDir: self.accountsDir)
+            
+            // 4. Tạo file rỗng đè nát Plist
+            let plistGarbageDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
+            try? fm.createDirectory(at: plistGarbageDir, withIntermediateDirectories: true)
+            let emptyData = Data()
+            for file in self.plistFiles {
+                try? emptyData.write(to: plistGarbageDir.appendingPathComponent(file), options: .atomic)
             }
             
+            // 5. Ghi đè Plist
+            _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: plistGarbageDir.path, targetDir: self.prefsDir)
+            
+            // Đợi 1s để FS flush
+            Thread.sleep(forTimeInterval: 1.0)
+            
             DispatchQueue.main.async {
-                if success {
-                    self.log("🎉 BYPASS THÀNH CÔNG! File bị hỏng, Apple ID đã bay màu.")
-                    self.alertMessage = "Bypass iCloud Thành Công! Vui lòng khởi động lại thiết bị."
-                } else {
-                    self.log("❌ Bypass thất bại.")
-                    self.alertMessage = "Bypass thất bại."
-                }
+                self.log("🎉 BYPASS THÀNH CÔNG! Đã xóa sạch Apple ID.")
+                self.alertMessage = "Bypass iCloud Thành Công! Vui lòng khởi động lại thiết bị."
                 self.isProcessing = false
                 self.showAlert = true
             }
+            
             try? fm.removeItem(at: garbageDir)
+            try? fm.removeItem(at: plistGarbageDir)
         }
     }
 
     // ============================================================
-    // RESTORE: Ghi file sạch (0-byte) xóa sạch Apple ID
+    // RESTORE: TẠO SQLITE RỖNG (KHÔNG APPLE ID)
     // ============================================================
     func restoreOriginalAccounts() {
         guard !isProcessing else { return }
@@ -434,39 +433,54 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Restore (Clean SQLite)...")
+        log("[*] Bắt đầu Restore (Tạo DB sạch)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let fm = FileManager.default
+            
+            // Tạo file SQLite rỗng chuẩn 4096 bytes
+            var emptyDB = Data(count: 4096)
+            let header: [UInt8] = [
+                0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
+                0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x2E, 0x7A, 0x00
+            ]
+            emptyDB.replaceSubrange(0..<100, with: header)
+            
             let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_\(UUID().uuidString)")
             try? fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
             
+            // Ghi đè SQLite bằng file sạch
             for file in self.targetFiles {
-                try? Data().write(to: cleanDir.appendingPathComponent(file), options: .atomic) // 0-byte
+                try? emptyDB.write(to: cleanDir.appendingPathComponent(file), options: .atomic)
             }
+            _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: cleanDir.path, targetDir: self.accountsDir)
             
-            var success = false
-            for attempt in 1...3 {
-                if self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: cleanDir.path, targetDir: self.accountsDir) {
-                    success = true
-                    break
-                }
-                Thread.sleep(forTimeInterval: 0.5)
+            // Xóa sạch plist
+            let plistEmptyDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
+            try? fm.createDirectory(at: plistEmptyDir, withIntermediateDirectories: true)
+            let emptyData = Data()
+            for file in self.plistFiles {
+                try? emptyData.write(to: plistEmptyDir.appendingPathComponent(file), options: .atomic)
             }
+            _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: plistEmptyDir.path, targetDir: self.prefsDir)
+            
+            Thread.sleep(forTimeInterval: 1.0)
             
             DispatchQueue.main.async {
-                if success {
-                    self.log("✅ RESTORE HOÀN TẤT! Đã nạp file SQLite sạch, xóa sạch Apple ID.")
-                    self.alertMessage = "Restore Thành Công! Đã xóa sạch Apple ID."
-                } else {
-                    self.log("❌ Restore thất bại.")
-                    self.alertMessage = "Restore thất bại."
-                }
+                self.log("✅ RESTORE HOÀN TẤT! Đã tạo DB sạch, không có Apple ID.")
+                self.alertMessage = "Restore Thành Công! Đã xóa sạch Apple ID."
                 self.isProcessing = false
                 self.showAlert = true
             }
+            
             try? fm.removeItem(at: cleanDir)
+            try? fm.removeItem(at: plistEmptyDir)
         }
     }
 }
