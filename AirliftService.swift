@@ -157,9 +157,9 @@ class AirliftService: ObservableObject {
         advertiseListener?.cancel()
         advertiseListener = nil
         
-        let nwPort: NWEndpoint.Port = port > 0 ? (NWEndpoint.Port(rawValue: port) ?? .any) : .any
         do {
-            let listener = try NWListener(using: .tcp, on: nwPort)
+            // Dùng .any để tránh lỗi error 48 (Address already in use) khi port của FFI đang mở
+            let listener = try NWListener(using: .tcp, on: .any)
             listener.service = NWListener.Service(
                 name: name,
                 type: "_remotepairing-pairable-host._tcp",
@@ -169,7 +169,7 @@ class AirliftService: ObservableObject {
                 switch state {
                 case .ready:
                     if let actualPort = listener.port?.rawValue {
-                        self?.log("📣 Đang quảng bá Bonjour: \(name) : \(actualPort)")
+                        self?.log("📣 Đang quảng bá Bonjour: \(name) (FFI port: \(port), mDNS port: \(actualPort))")
                     }
                 case .failed(let err):
                     self?.log("⚠️ Quảng bá Bonjour lỗi: \(err.localizedDescription)")
