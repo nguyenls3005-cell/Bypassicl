@@ -324,3 +324,81 @@ class AirliftService: ObservableObject {
             let err = outError != nil ? String(cString: outError!) : "unknown error"
             log("❌ Failed to write files: \(err)")
             return false
+        }
+        
+        return true
+    }
+    
+    // MARK: - Auto Backup
+    private func autoBackupAccountsIfNeeded() -> Bool {
+        if hasCompleteBackup {
+            log("ℹ️ Original backup already exists in AccountsBackup, keeping original.")
+            return true
+        }
+        
+        log("[*] Auto-backing up 3 Accounts files before Bypass...")
+        do {
+            try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+        } catch {
+            log("❌ Could not create backup directory: \(error.localizedDescription)")
+            return false
+        }
+        
+        for file in targetFiles {
+            let path = "\(accountsDir)/\(file)"
+            guard let data = ffi_read_file(path) else {
+                log("❌ Auto-backup failed for file: \(file)")
+                return false
+            }
+            do {
+                try data.write(to: backupDir.appendingPathComponent(file), options: .atomic)
+                log("✅ Backup saved: \(file) (\(data.count) bytes)")
+            } catch {
+                log("❌ Failed to write backup file \(file): \(error.localizedDescription)")
+                return false
+            }
+        }
+        
+        log("✅ Auto-backup completed at: \(backupDir.path)")
+        return true
+    }
+    
+    // MARK: - Bypass iCloud
+    func bypassICloud() {
+        log("[*] Starting Bypass...")
+        guard autoBackupAccountsIfNeeded() else {
+            log("❌ Bypass cancelled — auto-backup failed")
+            return
+        }
+        
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("empty_\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+            for file in targetFiles {
+                try Data().write(to: tmp.appendingPathComponent(file), options: .atomic)
+            }
+        } catch {
+            log("❌ Could not create overwrite data: \(error.localizedDescription)")
+            return
+        }
+        
+        if ffi_write_dir(sourceDir: tmp.path, targetDir: accountsDir) {
+            log("🎉 BYPASS SUCCESSFUL! Reboot your device.")
+        } else {
+            log("❌ Failed to write files")
+        }
+        try? FileManager.default.removeItem(at: tmp)
+    }
+    
+    // MARK: - Restore Original Accounts
+    func restoreOriginalAccounts() {
+        log("[*] Restoring original accounts from backup...")
+        
+        let fm = FileManager.default
+        let stagingDir = FileManager.default.temporaryDirectory.appendingPathComponent("restore_\(UUID().uuidString)")
+        
+        do {
+            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+            for file in targetFiles {
+                let srcURL = backupDir.appendingPathComponent(file)
+                guard fm.fileExists(at
