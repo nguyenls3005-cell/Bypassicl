@@ -27,6 +27,14 @@ class AirliftService: ObservableObject {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
     
+    var hasCompleteBackup: Bool {
+        let fm = FileManager.default
+        return targetFiles.allSatisfy { file in
+            let url = backupDir.appendingPathComponent(file)
+            return fm.fileExists(atPath: url.path)
+        }
+    }
+    
     private func log(_ message: String) {
         DispatchQueue.main.async {
             self.logs += message + "\n"
@@ -90,7 +98,7 @@ class AirliftService: ObservableObject {
         }
     }
     
-    // MARK: - Pair on Device (StikPair flow: Local Network + FFI host + Keep-Alive)
+    // MARK: - Pair on Device
     func startPairingOnDevice() {
         guard !isPairing else { return }
         
@@ -219,7 +227,7 @@ class AirliftService: ObservableObject {
         log("⏹ Đã hủy trạng thái pairing")
     }
     
-    // MARK: - Connect (dùng pairing đã có)
+    // MARK: - Connect
     func connect() -> Bool {
         log("[*] Kiểm tra pairing...")
         
@@ -247,7 +255,7 @@ class AirliftService: ObservableObject {
         return true
     }
     
-    // MARK: - Grappa (giữ nguyên)
+    // MARK: - Grappa
     private func generateGrappaToken() -> Data? {
         let maxLen = 1024
         var buffer = [UInt8](repeating: 0, count: maxLen)
@@ -305,41 +313,57 @@ class AirliftService: ObservableObject {
         return true
     }
     
-    // MARK: - Backup & Bypass
-    func backupAccounts() -> Bool {
-        log("[*] Backup Accounts...")
-        try? FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+    // MARK: - Auto Backup (chỉ chạy lần đầu khi chưa có bản backup đầy đủ)
+    private func autoBackupAccountsIfNeeded() -> Bool {
+        if hasCompleteBackup {
+            log("ℹ️ Đã có bản backup gốc trong AccountsBackup, giữ nguyên bản gốc.")
+            return true
+        }
         
-        var ok = true
+        log("[*] Tự động backup 3 file Accounts trước khi Bypass...")
+        do {
+            try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+        } catch {
+            log("❌ Không tạo được thư mục backup: \(error.localizedDescription)")
+            return false
+        }
+        
         for file in targetFiles {
             let path = "\(accountsDir)/\(file)"
             guard let data = ffi_read_file(path) else {
-                ok = false
-                continue
+                log("❌ Tự động backup thất bại ở file: \(file)")
+                return false
             }
             do {
-                try data.write(to: backupDir.appendingPathComponent(file))
-                log("✅ Backup \(file) (\(data.count) bytes)")
+                try data.write(to: backupDir.appendingPathComponent(file), options: .atomic)
+                log("✅ Đã lưu backup \(file) (\(data.count) bytes)")
             } catch {
-                log("❌ \(error.localizedDescription)")
-                ok = false
+                log("❌ Ghi file backup \(file) lỗi: \(error.localizedDescription)")
+                return false
             }
         }
-        return ok
+        
+        log("✅ Auto backup hoàn tất vào: \(backupDir.path)")
+        return true
     }
     
+    // MARK: - Bypass (Tự động backup lần đầu -> Ghi đè rỗng)
     func bypassICloud() {
-        log("[*] Bypass (ghi đè rỗng)...")
-        guard backupAccounts() else {
-            log("❌ Hủy vì backup thất bại")
+        log("[*] Bắt đầu Bypass...")
+        guard autoBackupAccountsIfNeeded() else {
+            log("❌ Hủy Bypass vì tự động backup thất bại")
             return
         }
         
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("empty_\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-        
-        for file in targetFiles {
-            try? Data().write(to: tmp.appendingPathComponent(file))
+        do {
+            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+            for file in targetFiles {
+                try Data().write(to: tmp.appendingPathComponent(file), options: .atomic)
+            }
+        } catch {
+            log("❌ Không tạo được dữ liệu ghi đè: \(error.localizedDescription)")
+            return
         }
         
         if ffi_write_dir(sourceDir: tmp.path, targetDir: accountsDir) {
@@ -348,5 +372,41 @@ class AirliftService: ObservableObject {
             log("❌ Ghi đè thất bại")
         }
         try? FileManager.default.removeItem(at: tmp)
+    }
+    
+    // MARK: - Restore (Trả nguyên vẹn 3 file sqlite đã backup về Accounts)
+    func restoreOriginalAccounts() {
+        log("[*] Khôi phục tài khoản gốc từ bản backup...")
+        
+        let fm = FileManager.default
+        let stagingDir = FileManager.default.temporaryDirectory.appendingPathComponent("restore_\(UUID().uuidString)")
+        
+        do {
+            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+            for file in targetFiles {
+                let srcURL = backupDir.appendingPathComponent(file)
+                guard fm.fileExists(atPath: srcURL.path) else {
+                    log("❌ Thiếu file backup: \(file)")
+                    try? fm.removeItem(at: stagingDir)
+                    return
+                }
+                let data = try Data(contentsOf: srcURL)
+                let dstURL = stagingDir.appendingPathComponent(file)
+                try data.write(to: dstURL, options: .atomic)
+                log("📦 Chuẩn bị restore \(file) (\(data.count) bytes)")
+            }
+        } catch {
+            log("❌ Chuẩn bị file restore thất bại: \(error.localizedDescription)")
+            try? fm.removeItem(at: stagingDir)
+            return
+        }
+        
+        if ffi_write_dir(sourceDir: stagingDir.path, targetDir: accountsDir) {
+            log("🎉 RESTORE THÀNH CÔNG! Đã trả lại nguyên vẹn 3 file sqlite. Reboot thiết bị.")
+        } else {
+            log("❌ Restore thất bại")
+        }
+        
+        try? fm.removeItem(at: stagingDir)
     }
 }
