@@ -23,8 +23,15 @@ targets:
         INFOPLIST_FILE: Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.bypass.icl.Bypassicl
         SWIFT_OBJC_BRIDGING_HEADER: "Bypassicl-Bridging-Header.h"
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
-        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Frameworks"
+          - "$(SRCROOT)/Frameworks/AirliftFFI.xcframework/ios-arm64/Headers"
+          - "$(SRCROOT)/Frameworks/AirliftFFI.xcframework/ios-arm64_x86_64-simulator/Headers"
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(SRCROOT)/Frameworks"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-ObjC"
         CODE_SIGNING_REQUIRED: "NO"
         CODE_SIGN_IDENTITY: ""
         CODE_SIGNING_ALLOWED: "NO"
@@ -33,4 +40,4 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
       - framework: Frameworks/AirliftFFI.xcframework
-        embed: false
+        embed: true
