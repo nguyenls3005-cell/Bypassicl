@@ -1,16 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl
-// RemotePairing host logic ported from StikPair / idevice
-//
-// Key differences from typical Bonjour examples:
-//  • Advertises `_remotepairing-pairable-host._tcp` with
-//    NetworkPairingKeys TXT records (identifier, authTag, flags,
-//    model, name, wireProtocolVersion)[reference:1]
-//  • Masquerades as Mac17,7 so iOS treats host as a computer[reference:2]
-//  • Keeps app alive with background task + silent audio while
-//    user is in Settings[reference:3][reference:4]
-//  • Surfaces PIN as a time-sensitive notification, not a Live
-//    Activity, because person is inside Settings[reference:5]
+// AirliftService.swift — Bypassicl (Ported from StikPair)
 // ============================================================
 
 import Foundation
@@ -20,40 +9,29 @@ import Network
 import AVFoundation
 import UIKit
 import UserNotifications
+import BackgroundTasks
 
 class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     static let shared = AirliftService()
-
+    
     @Published var logs: String = "=== Bypassicl Log ===\n"
     @Published var isPairing = false
     @Published var currentPin: String? = nil
     @Published var pairingFilePath: String? = nil
     @Published var lastDeviceName: String? = nil
-
-    // ── Bonjour / pairing state ──────────────────────────────
-    private var bonjourPublisher: NetService?
-    private var publishedServiceId: String = "Bypassicl"
-    private var publishedPort: Int32 = 0
-    private var watchdogTimer: Timer?
-    private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
-    private var pairingHostActive = false
-    private var preStagedPin: String? = nil
-
-    // ── Identity (must match the FFI's pairing identity) ─────
-    // In StikPair this comes from the Rust side; here we mirror
-    // the fields the mDNS TXT record expects.
-    private var hostIdentifier: String = "00000000-0000-0000-0000-000000000000"
-    private var hostAuthTag: String = ""
-    private var hostWireProtocolVersion: String = "1.0"
-
-    private var localNetBrowser: NWBrowser?
+    
+    private var netService: NetService?
     private var audioPlayer: AVAudioPlayer?
+    private var bgTask: BGContinuedProcessingTask?
+    private var pairingStarted = false
+    private var taskFinished = false
+    
+    private let localNetwork = LocalNetworkAuthorization()
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
-
+    
     var backupDir: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AccountsBackup")
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("AccountsBackup")
     }
     private var documentsDir: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -62,261 +40,160 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         let fm = FileManager.default
         return targetFiles.allSatisfy { fm.fileExists(atPath: backupDir.appendingPathComponent($0).path) }
     }
-
+    
     override init() {
         super.init()
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(onForeground),
-            name: UIApplication.willEnterForegroundNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(onBackground),
-            name: UIApplication.didEnterBackgroundNotification, object: nil)
+        registerBackgroundTask()
     }
-
-    deinit { NotificationCenter.default.removeObserver(self) }
-
+    
     private func log(_ message: String) {
         DispatchQueue.main.async {
             self.logs += message + "\n"
             print(message)
         }
     }
-
+    
     // ============================================================
-    // FFI CALLBACKS — keep the exact StikPair shape
+    // FFI CALLBACKS (Exact StikPair Signature)
     // ============================================================
     private static let logCallback: ALLogCallback = { ctx, msg in
         guard let msg = msg, let ctx = ctx else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
         service.log("[Airlift] \(String(cString: msg))")
     }
-
+    
     private static let pinCallback: ALPairPinCb = { pin, ctx in
-        guard let pin = pin, let ctx = ctx else { return }
+        guard let ctx = ctx, let pin = pin else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
         let pinStr = String(cString: pin)
-        service.preStagedPin = pinStr
         DispatchQueue.main.async {
             service.currentPin = pinStr
             service.log("🔐 PIN READY: \(pinStr)")
-            service.showPinNotification(pinStr)   // StikPair uses a notification, not Live Activity[reference:6]
+            service.presentPin(pinStr)
         }
     }
-
-    private static let readyCallback: ALPairReadyCb = { ctx, serviceId, port, identifier, authTag, wireVersion in
-        guard let ctx = ctx else { return }
+    
+    // FIX: Exact StikPair signature with keys, vals, count
+    private static let readyCallback: ALPairReadyCb = { ctx, serviceID, port, keys, vals, count in
+        guard let ctx = ctx, let serviceID = serviceID else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
+        let id = String(cString: serviceID)
 
-        let sid  = serviceId   != nil ? String(cString: serviceId!)   : "Bypassicl"
-        let id   = identifier  != nil ? String(cString: identifier!)  : "00000000-0000-0000-0000-000000000000"
-        let tag  = authTag     != nil ? String(cString: authTag!)     : ""
-        let wv   = wireVersion != nil ? String(cString: wireVersion!) : "1.0"
-
-        service.hostIdentifier = id
-        service.hostAuthTag = tag
-        service.hostWireProtocolVersion = wv
-
-        let netPort = Int32(port)
-        service.log("📡 Host ready: \(sid) : \(netPort) (id: \(id), authTag: \(tag))")
+        var txt: [String: Data] = [:]
+        if let keys = keys, let vals = vals {
+            for i in 0..<Int(count) {
+                guard let k = keys[i], let v = vals[i] else { continue }
+                txt[String(cString: k)] = Data(String(cString: v).utf8)
+            }
+        }
 
         DispatchQueue.main.async {
-            service.startContinuousBonjourAdvertisement(
-                serviceId: sid,
-                port: netPort,
-                identifier: id,
-                authTag: tag,
-                wireVersion: wv
-            )
+            service.startAdvertising(serviceID: id, port: Int32(port), txt: txt)
         }
     }
-
+    
     // ============================================================
-    // CONTINUOUS BONJOUR — NetworkPairingKeys TXT records
+    // BACKGROUND TASK & ADVERTISING (StikPair Logic)
     // ============================================================
-    func startContinuousBonjourAdvertisement(
-        serviceId: String,
-        port: Int32,
-        identifier: String,
-        authTag: String,
-        wireVersion: String
-    ) {
-        stopBonjourPublisherOnly()
-        publishedServiceId = serviceId
-        publishedPort = port
-        guard port > 0 else { log("⚠️ Invalid port \(port)"); return }
-
-        let svc = NetService(
-            domain: "local.",
-            type: "_remotepairing-pairable-host._tcp.",
-            name: serviceId,
-            port: port
-        )
-
-        // ── NetworkPairingKeys TXT record ──────────────────
-        // Exact keys from RemotePairing symbol dump[reference:7]
-        var txt: [String: Data] = [
-            "identifier": identifier.data(using: .utf8)!,
-            "authTag": authTag.data(using: .utf8)!,
-            "flags": "1".data(using: .utf8)!,               // Pairable host flag
-            "model": "Mac17,7".data(using: .utf8)!,         // Masquerade as Mac[reference:8]
-            "name": serviceId.data(using: .utf8)!,
-            "wireProtocolVersion": wireVersion.data(using: .utf8)!
-        ]
-
-        // If a PIN was pre-staged, include it so the host can
-        // verify immediately when Settings connects.
-        if let pin = preStagedPin {
-            txt["pin"] = pin.data(using: .utf8)!
-        }
-
-        svc.setTXTRecord(NetService.data(fromTXTRecord: txt))
-        svc.includesPeerToPeer = true
-        svc.delegate = self
-        svc.schedule(in: .main, forMode: .common)
-        svc.publish()
-
-        bonjourPublisher = svc
-        log("🔊 Bonjour publishing: \(serviceId) @ \(port)")
-        log("📝 TXT: identifier=\(identifier.prefix(8))… authTag=\(authTag.prefix(8))… model=Mac17,7")
-
-        startBonjourWatchdog()
-    }
-
-    private func stopBonjourPublisherOnly() {
-        watchdogTimer?.invalidate(); watchdogTimer = nil
-        bonjourPublisher?.stop(); bonjourPublisher = nil
-    }
-
-    func stopContinuousBonjourAdvertisement() {
-        stopBonjourPublisherOnly()
-        log("🔇 Bonjour stopped")
-    }
-
-    private func startBonjourWatchdog() {
-        watchdogTimer?.invalidate()
-        watchdogTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
-            guard let self = self, self.pairingHostActive else { return }
-            if self.bonjourPublisher == nil {
-                self.log("🔄 Watchdog: republishing Bonjour")
-                self.startContinuousBonjourAdvertisement(
-                    serviceId: self.publishedServiceId,
-                    port: self.publishedPort,
-                    identifier: self.hostIdentifier,
-                    authTag: self.hostAuthTag,
-                    wireVersion: self.hostWireProtocolVersion
-                )
+    nonisolated private func registerBackgroundTask() {
+        let taskId = (Bundle.main.bundleIdentifier ?? "com.bypassicl.app") + ".pairing"
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: DispatchQueue.main) { task in
+            guard let task = task as? BGContinuedProcessingTask else { return }
+            DispatchQueue.main.async {
+                AirliftService.shared.runPairing(task: task)
             }
         }
     }
+    
+    private func submitBackgroundTask() {
+        let taskId = (Bundle.main.bundleIdentifier ?? "com.bypassicl.app") + ".pairing"
+        let request = BGContinuedProcessingTaskRequest(
+            identifier: taskId,
+            title: "Bypassicl",
+            subtitle: "Waiting for a device to connect…")
+        request.strategy = .queue
 
-    // MARK: NetServiceDelegate
-    func netServiceDidPublish(_ sender: NetService) {
-        log("✅ Bonjour published: \(sender.name) @ \(sender.port)")
-    }
-    func netService(_ sender: NetService, didNotPublish errorDict: [String : NSNumber]) {
-        let code = errorDict[NetService.errorCode]?.intValue ?? -1
-        log("❌ Bonjour didNotPublish (\(code)) — retry")
-        if bonjourPublisher === sender { bonjourPublisher = nil }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            self.startContinuousBonjourAdvertisement(
-                serviceId: self.publishedServiceId,
-                port: self.publishedPort,
-                identifier: self.hostIdentifier,
-                authTag: self.hostAuthTag,
-                wireVersion: self.hostWireProtocolVersion
-            )
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self = self, !self.pairingStarted else { return }
+                self.runPairing(task: nil)
+            }
+        } catch {
+            runPairing(task: nil)
         }
     }
-    func netServiceDidStop(_ sender: NetService) {
-        log("⏹ Bonjour stopped")
-        if bonjourPublisher === sender { bonjourPublisher = nil }
+    
+    private func startAdvertising(serviceID: String, port: Int32, txt: [String: Data]) {
+        stopAdvertising()
+        let service = NetService(domain: "", type: "_remotepairing-pairable-host._tcp.", name: serviceID, port: port)
+        service.setTXTRecord(NetService.data(fromTXTRecord: txt))
+        service.publish()
+        netService = service
+        log("🔊 Bonjour publishing: \(serviceID) @ \(port)")
     }
-
-    // ============================================================
-    // BACKGROUND SURVIVAL — task + audio + NetService hold
-    // ============================================================
-    private func beginBackgroundTask() {
-        guard backgroundTaskId == .invalid else { return }
-        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "AirliftPairing") { [weak self] in
-            self?.log("⏰ Background task expired — audio + NetService hold")
-            self?.endBackgroundTask()
-        }
+    
+    private func stopAdvertising() {
+        netService?.stop()
+        netService = nil
     }
-    private func endBackgroundTask() {
-        guard backgroundTaskId != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(backgroundTaskId)
-        backgroundTaskId = .invalid
-    }
-
-    @objc private func onForeground() {
-        guard pairingHostActive else { return }
-        log("🔆 Foreground — verifying Bonjour")
-        if bonjourPublisher == nil {
-            startContinuousBonjourAdvertisement(
-                serviceId: publishedServiceId,
-                port: publishedPort,
-                identifier: hostIdentifier,
-                authTag: hostAuthTag,
-                wireVersion: hostWireProtocolVersion
-            )
-        }
-        beginBackgroundTask()
-        if let pin = preStagedPin, currentPin == nil {
-            currentPin = pin
-            log("🔐 Re-surfaced pre-staged PIN: \(pin)")
-            showPinNotification(pin)
-        }
-    }
-    @objc private func onBackground() {
-        guard pairingHostActive else { return }
-        log("🌙 Background — holding advertisement")
-        beginBackgroundTask()
-    }
-
-    // ============================================================
-    // PIN NOTIFICATION (StikPair-style)
-    // ============================================================
-    private func showPinNotification(_ pin: String) {
+    
+    private func presentPin(_ pin: String) {
+        bgTask?.progress.completedUnitCount = 50
+        bgTask?.updateTitle("Bypassicl", subtitle: "Enter code \(pin) on this device")
+        
         let content = UNMutableNotificationContent()
-        content.title = "Pairing PIN Ready"
-        content.body = "Enter \(pin) in Settings → Developer Mode → Pair with \(publishedServiceId)"
-        content.sound = .defaultCritical
-        content.interruptionLevel = .timeSensitive   // ensure it surfaces while in Settings
-        let req = UNNotificationRequest(
-            identifier: "pair-pin-\(pin)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(req) { [weak self] err in
-            if let err = err { self?.log("⚠️ PIN notification failed: \(err.localizedDescription)") }
-        }
+        content.title = "Bypassicl pairing code"
+        content.body = "Enter \(pin) on this device to pair."
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "bypassicl.pin", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
-
+    
     // ============================================================
-    // PAIR ON DEVICE — entry point
+    // PAIR ON DEVICE ENTRY POINT
     // ============================================================
     func startPairingOnDevice() {
         guard !isPairing else { return }
         isPairing = true
         currentPin = nil
-        preStagedPin = nil
-        pairingHostActive = true
+        pairingStarted = false
+        
         log("[*] Starting Pair on Device...")
-        log("👉 Grant Local Network, keep app alive, then Settings → Developer Mode")
-
-        try? FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
-        let outPath = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing").path
-        let ctx = Unmanaged.passUnretained(self).toOpaque()
-
-        DispatchQueue.main.async {
-            self.startKeepAliveAudio()
-            self.beginBackgroundTask()
-            self.triggerLocalNetworkPrompt()
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-                if !granted { self.log("⚠️ Notifications denied — PIN may not surface") }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        
+        Task {
+            guard await localNetwork.request() else {
+                self.isPairing = false
+                self.log("❌ Local Network permission required.")
+                return
+            }
+            DispatchQueue.main.async {
+                self.submitBackgroundTask()
             }
         }
-
+    }
+    
+    private func runPairing(task: BGContinuedProcessingTask?) {
+        guard !pairingStarted else { return }
+        pairingStarted = true
+        taskFinished = false
+        bgTask = task
+        
+        task?.progress.totalUnitCount = 100
+        task?.progress.completedUnitCount = 5
+        task?.expirationHandler = { [weak self] in
+            guard let self = self else { return }
+            self.finishTask(success: false)
+            if self.isPairing {
+                self.log("❌ Background time expired.")
+                self.isPairing = false
+            }
+        }
+        
+        let outPath = self.documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing").path
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        
         DispatchQueue.global(qos: .userInitiated).async {
             var result = ALPairResult()
             let code = al_pairing_run_host(
@@ -324,16 +201,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 AirliftService.readyCallback, AirliftService.pinCallback, ctx, &result
             )
             defer { al_pairing_result_free(&result) }
-
+            
             DispatchQueue.main.async {
-                self.pairingHostActive = false
-                self.stopContinuousBonjourAdvertisement()
-                self.endBackgroundTask()
-                self.stopKeepAliveAudio()
-                self.localNetBrowser?.cancel(); self.localNetBrowser = nil
+                self.stopAdvertising()
+                self.pairingStarted = false
                 self.isPairing = false
-                self.currentPin = nil
-
+                
                 if code == 0 {
                     if let path = result.pairing_file_path {
                         self.pairingFilePath = String(cString: path)
@@ -343,108 +216,35 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                         self.lastDeviceName = String(cString: name)
                         self.log("📱 Device: \(self.lastDeviceName!)")
                     }
+                    self.bgTask?.progress.completedUnitCount = 100
+                    self.postReturnNotification()
                 } else {
                     let err = result.error != nil ? String(cString: result.error!) : "unknown"
                     self.log("❌ Pairing failed: \(err)")
                 }
+                self.finishTask(success: code == 0)
             }
         }
     }
-
-    private func triggerLocalNetworkPrompt() {
-        localNetBrowser?.cancel(); localNetBrowser = nil
-        let browser = NWBrowser(
-            for: .bonjour(type: "_remotepairing-pairable-host._tcp", domain: "local."),
-            using: .tcp
-        )
-        browser.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready: self?.log("🌐 Local Network granted")
-            case .failed(let err):
-                self?.log("⚠️ NWBrowser failed: \(err.localizedDescription) — retry")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    guard let self = self, self.pairingHostActive else { return }
-                    self.triggerLocalNetworkPrompt()
-                }
-            default: break
-            }
-        }
-        localNetBrowser = browser
-        browser.start(queue: .main)
+    
+    private func finishTask(success: Bool) {
+        guard !taskFinished else { return }
+        taskFinished = true
+        bgTask?.setTaskCompleted(success: success)
+        bgTask = nil
+    }
+    
+    private func postReturnNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "Pairing complete"
+        content.body = "Return to Bypassicl to export the pairing file."
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "bypassicl.done", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 
     // ============================================================
-    // AUDIO KEEP-ALIVE (exact StikPair trick)
-    // ============================================================
-    private func startKeepAliveAudio() {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, options: [.mixWithOthers])
-            try session.setActive(true)
-
-            let sr: UInt32 = 8000, ns: UInt32 = 8000, ds = ns * 2
-            var wav = Data()
-            wav.append("RIFF".data(using: .ascii)!)
-            wav.append(withUnsafeBytes(of: (36 + ds).littleEndian) { Data($0) })
-            wav.append("WAVEfmt ".data(using: .ascii)!)
-            wav.append(withUnsafeBytes(of: UInt32(16).littleEndian) { Data($0) })
-            wav.append(withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) })
-            wav.append(withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) })
-            wav.append(withUnsafeBytes(of: sr.littleEndian) { Data($0) })
-            wav.append(withUnsafeBytes(of: (sr * 2).littleEndian) { Data($0) })
-            wav.append(withUnsafeBytes(of: UInt16(2).littleEndian) { Data($0) })
-            wav.append(withUnsafeBytes(of: UInt16(16).littleEndian) { Data($0) })
-            wav.append("data".data(using: .ascii)!)
-            wav.append(withUnsafeBytes(of: ds.littleEndian) { Data($0) })
-            wav.append(Data(count: Int(ds)))
-
-            let player = try AVAudioPlayer(data: wav)
-            player.numberOfLoops = -1
-            player.volume = 0.01
-            player.play()
-            audioPlayer = player
-        } catch {
-            log("⚠️ Audio keep-alive: \(error.localizedDescription)")
-        }
-    }
-
-    private func stopKeepAliveAudio() {
-        audioPlayer?.stop(); audioPlayer = nil
-        try? AVAudioSession.sharedInstance().setActive(false)
-    }
-
-    func stopPairing() {
-        pairingHostActive = false
-        stopContinuousBonjourAdvertisement()
-        localNetBrowser?.cancel(); localNetBrowser = nil
-        endBackgroundTask()
-        stopKeepAliveAudio()
-        isPairing = false
-        currentPin = nil
-        log("⏹ Pairing cancelled")
-    }
-
-    // ============================================================
-    // IMPORT PAIRING FILE (fallback)
-    // ============================================================
-    func importPairingFile(from url: URL) {
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        do {
-            try FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
-            let dest = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing")
-            try Data(contentsOf: url).write(to: dest, options: .atomic)
-            DispatchQueue.main.async {
-                self.pairingFilePath = dest.path
-                self.log("✅ Pairing file imported")
-            }
-        } catch {
-            log("❌ Import failed: \(error.localizedDescription)")
-        }
-    }
-
-    // ============================================================
-    // CONNECT / BYPASS / RESTORE (unchanged)
+    // ORIGINAL BYPASSICL FUNCTIONS (Kept intact)
     // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
@@ -465,15 +265,20 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return true
     }
 
-    private func generateGrappaToken() -> Data? {
-        let maxLen = 1024
-        var buffer = [UInt8](repeating: 0, count: maxLen)
-        var outLen: size_t = 0
-        var errBuffer = [CChar](repeating: 0, count: 256)
-        let result = ALGetGrappaToken(1, 0, 1, &buffer, maxLen, &outLen, &errBuffer, 256)
-        if result == 0 { return Data(bytes: buffer, count: Int(outLen)) }
-        log("Grappa Error (\(result)): \(String(cString: errBuffer))")
-        return nil
+    func importPairingFile(from url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        do {
+            try FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
+            let dest = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing")
+            try Data(contentsOf: url).write(to: dest, options: .atomic)
+            DispatchQueue.main.async {
+                self.pairingFilePath = dest.path
+                self.log("✅ Pairing file imported")
+            }
+        } catch {
+            log("❌ Import failed: \(error.localizedDescription)")
+        }
     }
 
     private func ffi_read_file(_ iosPath: String) -> Data? {
@@ -586,5 +391,64 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             log("❌ Restore: \(error.localizedDescription)")
         }
         try? fm.removeItem(at: stagingDir)
+    }
+}
+
+// ============================================================
+// LOCAL NETWORK AUTHORIZATION (Exact StikPair Class)
+// ============================================================
+@MainActor
+final class LocalNetworkAuthorization {
+    private var browser: NWBrowser?
+    private var listener: NWListener?
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    private let probeType = "_bypassiclprobe._tcp"
+
+    func request(timeout: TimeInterval = 60) async -> Bool {
+        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            self.continuation = cont
+
+            let params = NWParameters.tcp
+            params.includePeerToPeer = true
+
+            let listener = try? NWListener(using: params)
+            listener?.service = NWListener.Service(name: "BypassiclProbe", type: probeType)
+            listener?.newConnectionHandler = { $0.cancel() }
+            listener?.stateUpdateHandler = { [weak self] state in
+                if case .failed = state {
+                    Task { @MainActor in self?.finish(false) }
+                }
+            }
+            self.listener = listener
+
+            let browser = NWBrowser(for: .bonjour(type: probeType, domain: nil), using: params)
+            browser.stateUpdateHandler = { [weak self] state in
+                if case .failed = state {
+                    Task { @MainActor in self?.finish(false) }
+                }
+            }
+            browser.browseResultsChangedHandler = { [weak self] results, _ in
+                if !results.isEmpty {
+                    Task { @MainActor in self?.finish(true) }
+                }
+            }
+            self.browser = browser
+
+            listener?.start(queue: .main)
+            browser.start(queue: .main)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                Task { @MainActor in self?.finish(false) }
+            }
+        }
+    }
+
+    private func finish(_ authorized: Bool) {
+        guard let cont = continuation else { return }
+        continuation = nil
+        cont.resume(returning: authorized)
+        browser?.cancel(); browser = nil
+        listener?.cancel(); listener = nil
     }
 }
