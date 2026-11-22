@@ -1,6 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Ported from StikPair)
-// Yêu cầu target iOS 26.0
+// AirliftService.swift — Bypassicl (Full Code - Zero Lag)
 // ============================================================
 
 import Foundation
@@ -59,9 +58,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     private static let logCallback: ALLogCallback = { ctx, msg in
         guard let msg = msg, let ctx = ctx else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
-        DispatchQueue.main.async {
-            service.log("[Airlift] \(String(cString: msg))")
-        }
+        DispatchQueue.main.async { service.log("[Airlift] \(String(cString: msg))") }
     }
     
     private static let pinCallback: ALPairPinCb = { pin, ctx in
@@ -94,16 +91,38 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // BACKGROUND TASK & ADVERTISING
+    // BACKGROUND TASK
     // ============================================================
     nonisolated private func registerBackgroundTask() {
         let taskId = (Bundle.main.bundleIdentifier ?? "com.bypassicl.app") + ".pairing"
         BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: DispatchQueue.main) { task in
             guard let task = task as? BGContinuedProcessingTask else { return }
-            MainActor.assumeIsolated {
-                AirliftService.shared.runPairing(task: task)
-            }
+            MainActor.assumeIsolated { AirliftService.shared.runPairing(task: task) }
         }
+    }
+    
+    // ============================================================
+    // FIXED: ENTRY POINT (Không chặn luồng)
+    // ============================================================
+    func startPairingOnDevice() {
+        guard !isPairing else { return }
+        
+        // 1. Cập nhật UI ngay lập tức (Button mất là do nó đang block main thread)
+        self.isPairing = true
+        self.currentPin = nil
+        self.pairingStarted = false
+        self.log("[*] Starting Pair on Device...")
+        
+        // 2. Xin quyền thông báo ở background thread
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        
+        // 3. Kích hoạt prompt check quyền (chạy ngầm, không await)
+        Task.detached { [weak self] in
+            _ = await self?.localNetwork.request()
+        }
+        
+        // 4. Chạy FFI host NGAY LẬP TỨC (không đợi 3 giây như StikPair gốc)
+        self.submitBackgroundTask()
     }
     
     private func submitBackgroundTask() {
@@ -116,61 +135,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
 
         do {
             try BGTaskScheduler.shared.submit(request)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                guard let self = self, !self.pairingStarted else { return }
-                self.runPairing(task: nil)
-            }
         } catch {
-            runPairing(task: nil)
+            // Nếu submit fail (do máy ko hỗ trợ hoặc hết quota), vẫn chạy host trực tiếp
         }
-    }
-    
-    private func startAdvertising(serviceID: String, port: Int32, txt: [String: Data]) {
-        stopAdvertising()
-        let service = NetService(domain: "", type: "_remotepairing-pairable-host._tcp.", name: serviceID, port: port)
-        service.setTXTRecord(NetService.data(fromTXTRecord: txt))
-        service.publish()
-        netService = service
-        log("🔊 Bonjour publishing: \(serviceID) @ \(port)")
-    }
-    
-    private func stopAdvertising() {
-        netService?.stop()
-        netService = nil
-    }
-    
-    private func presentPin(_ pin: String) {
-        bgTask?.progress.completedUnitCount = 50
-        bgTask?.updateTitle("Bypassicl", subtitle: "Enter code \(pin) on this device")
         
-        let content = UNMutableNotificationContent()
-        content.title = "Bypassicl pairing code"
-        content.body = "Enter \(pin) on this device to pair."
-        content.sound = .default
-        let request = UNNotificationRequest(identifier: "bypassicl.pin", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
-    }
-    
-    // ============================================================
-    // PAIR ON DEVICE ENTRY POINT
-    // ============================================================
-    func startPairingOnDevice() {
-        guard !isPairing else { return }
-        isPairing = true
-        currentPin = nil
-        pairingStarted = false
-        
-        log("[*] Starting Pair on Device...")
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        
-        Task {
-            // Check quyền. Nếu false (do user từ chối hoặc cache), vẫn cố chạy host.
-            let authorized = await localNetwork.request()
-            if !authorized {
-                self.log("⚠️ Không lấy được quyền Local Network. Thử chạy host trực tiếp...")
-            }
-            self.submitBackgroundTask()
-        }
+        // Bắt đầu chạy Pairing ngay tức khắc
+        self.runPairing(task: nil)
     }
     
     private func runPairing(task: BGContinuedProcessingTask?) {
@@ -235,6 +205,40 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         bgTask = nil
     }
     
+    // ============================================================
+    // FIXED: ADVERTISING (Bắt buộc schedule vào runloop chính)
+    // ============================================================
+    private func startAdvertising(serviceID: String, port: Int32, txt: [String: Data]) {
+        stopAdvertising()
+        let service = NetService(domain: "", type: "_remotepairing-pairable-host._tcp.", name: serviceID, port: port)
+        service.setTXTRecord(NetService.data(fromTXTRecord: txt))
+        
+        // Bắt buộc phải schedule vào main runloop để nó nổ ngay lập tức, không bị trễ
+        service.schedule(in: .main, forMode: .common)
+        service.delegate = self
+        service.publish()
+        
+        netService = service
+        log("🔊 Bonjour publishing: \(serviceID) @ \(port)")
+    }
+    
+    private func stopAdvertising() {
+        netService?.stop()
+        netService = nil
+    }
+    
+    private func presentPin(_ pin: String) {
+        bgTask?.progress.completedUnitCount = 50
+        bgTask?.updateTitle("Bypassicl", subtitle: "Enter code \(pin) on this device")
+        
+        let content = UNMutableNotificationContent()
+        content.title = "Bypassicl pairing code"
+        content.body = "Enter \(pin) on this device to pair."
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "bypassicl.pin", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+    
     private func postReturnNotification() {
         let content = UNMutableNotificationContent()
         content.title = "Pairing complete"
@@ -245,7 +249,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // CÁC HÀM CŨ CỦA BYPASSICL (Giữ nguyên)
+    // CÁC HÀM CŨ CỦA BYPASSICL
     // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
@@ -394,7 +398,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
 }
 
 // ============================================================
-// LOCAL NETWORK AUTHORIZATION (Exact StikPair Class)
+// LOCAL NETWORK AUTHORIZATION
 // ============================================================
 @MainActor
 final class LocalNetworkAuthorization {
@@ -404,7 +408,7 @@ final class LocalNetworkAuthorization {
 
     private let probeType = "_bypassiclprobe._tcp"
 
-    func request(timeout: TimeInterval = 10) async -> Bool {
+    func request(timeout: TimeInterval = 5) async -> Bool {
         await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             self.continuation = cont
 
