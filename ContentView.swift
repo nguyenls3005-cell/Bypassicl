@@ -77,52 +77,44 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                     .shadow(color: Color.black.opacity(0.05), radius: 10, x: 0, y: 5)
                     
-                    // 2. CHỌN CHỨC NĂNG
-                    Text("Chọn chức năng")
-                        .font(.headline)
-                        .padding(.horizontal, 4)
-                    
-                    HStack {
-                        Text("Bypass Apple ID")
-                            .font(.body)
-                            .fontWeight(.medium)
-                        Spacer()
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.orange)
-                    }
-                    .padding()
-                    .background(Color(UIColor.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .shadow(color: Color.black.opacity(0.03), radius: 5, x: 0, y: 2)
-                    
-                    // 3. NÚT HÀNH ĐỘNG
+                    // 2. NÚT HÀNH ĐỘNG (Ác & Thiện)
                     VStack(spacing: 12) {
-                        Button(action: { airlift.bypassICloud() }) {
-                            Text("Bắt đầu chạy")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding()
-                                .background(LinearGradient(colors: [Color.orange, Color.orange.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                .foregroundColor(.white)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .shadow(color: Color.orange.opacity(0.4), radius: 8, x: 0, y: 4)
+                        Button(action: { airlift.evilBypass() }) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Bypass Ác (Lock Máy)")
+                                    .font(.headline)
+                                Text("Chặn FMI, khóa máy, văng Settings")
+                                    .font(.caption)
+                                    .opacity(0.8)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                            .background(LinearGradient(colors: [Color.red, Color.red.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .shadow(color: Color.red.opacity(0.4), radius: 8, x: 0, y: 4)
                         }
                         .disabled(airlift.isProcessing || airlift.isPairing)
                         
-                        Button(action: { airlift.restoreOriginalAccounts() }) {
-                            Text("Khôi phục toàn bộ")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding()
-                                .background(LinearGradient(colors: [Color.orange.opacity(0.8), Color.orange.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                .foregroundColor(.white)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .shadow(color: Color.orange.opacity(0.3), radius: 8, x: 0, y: 4)
+                        Button(action: { airlift.goodBypass() }) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Bypass Thiện (Login Acc Mới)")
+                                    .font(.headline)
+                                Text("Xóa acc cũ, cho phép login acc khác")
+                                    .font(.caption)
+                                    .opacity(0.8)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                            .background(LinearGradient(colors: [Color.green, Color.green.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .shadow(color: Color.green.opacity(0.4), radius: 8, x: 0, y: 4)
                         }
                         .disabled(airlift.isProcessing || airlift.isPairing)
                     }
                     
-                    // 4. LOG
+                    // 3. LOG
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Tiến trình").font(.headline)
