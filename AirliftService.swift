@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Full Code - Zero Lag)
+// AirliftService.swift — Bypassicl (Infinite Retry Loop)
 // ============================================================
 
 import Foundation
@@ -91,7 +91,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // BACKGROUND TASK
+    // BACKGROUND TASK & AUDIO KEEP ALIVE
     // ============================================================
     nonisolated private func registerBackgroundTask() {
         let taskId = (Bundle.main.bundleIdentifier ?? "com.bypassicl.app") + ".pairing"
@@ -101,27 +101,63 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
     }
     
+    private func startKeepAliveAudio() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, options: [.mixWithOthers])
+            try session.setActive(true)
+
+            let sr: UInt32 = 8000, ns: UInt32 = 8000, ds = ns * 2
+            var wav = Data()
+            wav.append("RIFF".data(using: .ascii)!)
+            wav.append(withUnsafeBytes(of: (36 + ds).littleEndian) { Data($0) })
+            wav.append("WAVEfmt ".data(using: .ascii)!)
+            wav.append(withUnsafeBytes(of: UInt32(16).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: sr.littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: (sr * 2).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: UInt16(2).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: UInt16(16).littleEndian) { Data($0) })
+            wav.append("data".data(using: .ascii)!)
+            wav.append(withUnsafeBytes(of: ds.littleEndian) { Data($0) })
+            wav.append(Data(count: Int(ds)))
+
+            let player = try AVAudioPlayer(data: wav)
+            player.numberOfLoops = -1
+            player.volume = 0.01
+            player.play()
+            audioPlayer = player
+        } catch {
+            log("⚠️ Audio keep-alive error: \(error.localizedDescription)")
+        }
+    }
+
+    private func stopKeepAliveAudio() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+        try? AVAudioSession.sharedInstance().setActive(false)
+    }
+    
     // ============================================================
-    // FIXED: ENTRY POINT (Không chặn luồng)
+    // ENTRY POINT
     // ============================================================
     func startPairingOnDevice() {
         guard !isPairing else { return }
         
-        // 1. Cập nhật UI ngay lập tức (Button mất là do nó đang block main thread)
         self.isPairing = true
         self.currentPin = nil
         self.pairingStarted = false
-        self.log("[*] Starting Pair on Device...")
+        self.log("[*] Starting Pair on Device (Infinite Mode)...")
         
-        // 2. Xin quyền thông báo ở background thread
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         
-        // 3. Kích hoạt prompt check quyền (chạy ngầm, không await)
+        self.startKeepAliveAudio()
+        
         Task.detached { [weak self] in
             _ = await self?.localNetwork.request()
         }
         
-        // 4. Chạy FFI host NGAY LẬP TỨC (không đợi 3 giây như StikPair gốc)
         self.submitBackgroundTask()
     }
     
@@ -133,16 +169,14 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             subtitle: "Waiting for a device to connect…")
         request.strategy = .queue
 
-        do {
-            try BGTaskScheduler.shared.submit(request)
-        } catch {
-            // Nếu submit fail (do máy ko hỗ trợ hoặc hết quota), vẫn chạy host trực tiếp
-        }
+        do { try BGTaskScheduler.shared.submit(request) } catch {}
         
-        // Bắt đầu chạy Pairing ngay tức khắc
         self.runPairing(task: nil)
     }
     
+    // ============================================================
+    // INFINITE RETRY LOOP (CHỐNG XOÁ PAIRING)
+    // ============================================================
     private func runPairing(task: BGContinuedProcessingTask?) {
         guard !pairingStarted else { return }
         pairingStarted = true
@@ -154,11 +188,9 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         task?.expirationHandler = { [weak self] in
             guard let self = self else { return }
             Task { @MainActor in
+                self.isPairing = false // Dừng vòng lặp
                 self.finishTask(success: false)
-                if self.isPairing {
-                    self.log("❌ Background time expired.")
-                    self.isPairing = false
-                }
+                self.log("❌ Background time expired.")
             }
         }
         
@@ -166,34 +198,61 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         
         DispatchQueue.global(qos: .userInitiated).async {
-            var result = ALPairResult()
-            let code = al_pairing_run_host(
-                "0.0.0.0", 0, "Bypassicl", "Mac17,7", outPath, nil,
-                AirliftService.readyCallback, AirliftService.pinCallback, ctx, &result
-            )
-            defer { al_pairing_result_free(&result) }
-            
+            var isSuccess = false
+            var finalPath: String? = nil
+            var finalName: String? = nil
+
+            // VÒNG LẶP VÔ HẠN: Chạy lại host ngay khi nó return
+            while true {
+                // Check xem user có bấm Hủy bên Main Thread không
+                var shouldContinue = false
+                DispatchQueue.main.sync { shouldContinue = self.isPairing }
+                if !shouldContinue { break }
+
+                var result = ALPairResult()
+                let code = al_pairing_run_host(
+                    "0.0.0.0", 0, "Bypassicl", "Mac17,7", outPath, nil,
+                    AirliftService.readyCallback, AirliftService.pinCallback, ctx, &result
+                )
+
+                if code == 0 {
+                    // THÀNH CÔNG -> Lấy data và thoát vòng lặp
+                    isSuccess = true
+                    if let p = result.pairing_file_path { finalPath = String(cString: p) }
+                    if let n = result.device_name { finalName = String(cString: n) }
+                    al_pairing_result_free(&result)
+                    break
+                } else {
+                    // THẤT BẠI / NGẮT KẾT NỐI -> Xóa data cũ, chờ 0.5s rồi chạy lại
+                    let err = result.error != nil ? String(cString: result.error!) : "unknown"
+                    al_pairing_result_free(&result)
+                    
+                    DispatchQueue.main.async {
+                        self.log("🔄 Kết nối ngắt (\(err)). Đang khởi động lại Host...")
+                        self.currentPin = nil // Xóa PIN cũ
+                    }
+                    
+                    Thread.sleep(forTimeInterval: 0.5)
+                }
+            }
+
+            // DỌN DẸP SAU KHI XONG
             DispatchQueue.main.async {
-                self.stopAdvertising()
                 self.pairingStarted = false
                 self.isPairing = false
-                
-                if code == 0 {
-                    if let path = result.pairing_file_path {
-                        self.pairingFilePath = String(cString: path)
-                        self.log("✅ Pairing successful! File: \(self.pairingFilePath!)")
-                    }
-                    if let name = result.device_name {
-                        self.lastDeviceName = String(cString: name)
-                        self.log("📱 Device: \(self.lastDeviceName!)")
-                    }
+                self.stopAdvertising()
+                self.stopKeepAliveAudio()
+
+                if isSuccess {
+                    self.pairingFilePath = finalPath
+                    self.lastDeviceName = finalName
+                    self.log("✅ Pairing successful! File: \(finalPath ?? "")")
                     self.bgTask?.progress.completedUnitCount = 100
                     self.postReturnNotification()
                 } else {
-                    let err = result.error != nil ? String(cString: result.error!) : "unknown"
-                    self.log("❌ Pairing failed: \(err)")
+                    self.log("⏹ Pairing cancelled.")
                 }
-                self.finishTask(success: code == 0)
+                self.finishTask(success: isSuccess)
             }
         }
     }
@@ -206,18 +265,15 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // FIXED: ADVERTISING (Bắt buộc schedule vào runloop chính)
+    // ADVERTISING
     // ============================================================
     private func startAdvertising(serviceID: String, port: Int32, txt: [String: Data]) {
         stopAdvertising()
         let service = NetService(domain: "", type: "_remotepairing-pairable-host._tcp.", name: serviceID, port: port)
         service.setTXTRecord(NetService.data(fromTXTRecord: txt))
-        
-        // Bắt buộc phải schedule vào main runloop để nó nổ ngay lập tức, không bị trễ
         service.schedule(in: .main, forMode: .common)
         service.delegate = self
         service.publish()
-        
         netService = service
         log("🔊 Bonjour publishing: \(serviceID) @ \(port)")
     }
@@ -229,7 +285,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     
     private func presentPin(_ pin: String) {
         bgTask?.progress.completedUnitCount = 50
-        bgTask?.updateTitle("Bypassicl", subtitle: "Enter code \(pin) on this device")
+        bgTask?.updateTitle("Bypassicl", subtitle: "Enter code \(pin)")
         
         let content = UNMutableNotificationContent()
         content.title = "Bypassicl pairing code"
@@ -249,7 +305,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // CÁC HÀM CŨ CỦA BYPASSICL
+    // CÁC HÀM CŨ CỦA BYPASSICL (Giữ nguyên)
     // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
