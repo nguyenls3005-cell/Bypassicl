@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Final Fix)
+// AirliftService.swift — Bypassicl (Fast & Accurate Loops)
 // ============================================================
 
 import Foundation
@@ -51,15 +51,11 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         registerBackgroundTask()
     }
     
-    // FIX: Bỏ private để ContentView có thể gọi
     func log(_ message: String) {
         self.logs += message + "\n"
         print(message)
     }
     
-    // ============================================================
-    // FFI CALLBACKS
-    // ============================================================
     private static let logCallback: ALLogCallback = { ctx, msg in
         guard let msg = msg, let ctx = ctx else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
@@ -98,9 +94,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
     }
     
-    // ============================================================
-    // BACKGROUND TASK & AUDIO
-    // ============================================================
     nonisolated private func registerBackgroundTask() {
         let taskId = (Bundle.main.bundleIdentifier ?? "com.bypassicl.app") + ".pairing"
         BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: DispatchQueue.main) { task in
@@ -135,7 +128,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             player.volume = 0.01
             player.play()
             audioPlayer = player
-        } catch { log("⚠️ Audio keep-alive error: \(error.localizedDescription)") }
+        } catch { log("⚠️ Audio error: \(error.localizedDescription)") }
     }
 
     private func stopKeepAliveAudio() {
@@ -144,9 +137,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         try? AVAudioSession.sharedInstance().setActive(false)
     }
     
-    // ============================================================
-    // PAIRING LOGIC
-    // ============================================================
     func startPairingOnDevice() {
         guard !isPairing else { return }
         self.isPairing = true
@@ -217,7 +207,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                         self.currentPin = nil
                         self.log("🔄 Ngắt kết nối. Đang khởi động lại Host...")
                     }
-                    Thread.sleep(forTimeInterval: 0.5)
+                    Thread.sleep(forTimeInterval: 0.3)
                 }
             }
 
@@ -276,9 +266,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "bypassicl.pin", content: content, trigger: nil))
     }
 
-    // ============================================================
-    // CONNECT & IMPORT & FFI HELPERS
-    // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
         if pairingFilePath == nil {
@@ -312,6 +299,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         } catch { log("❌ Import failed: \(error.localizedDescription)") }
     }
 
+    // FIX: Nhận diện chính xác file rỗng (0 byte) để không bị loop vô tận
     nonisolated private func ffi_read_file_internal(pairingPath: String, iosPath: String) -> Data? {
         var outData: UnsafeMutablePointer<UInt8>? = nil
         var outLen: size_t = 0
@@ -322,8 +310,14 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             if let e = outError { al_string_free(e) }
             if let d = outData { al_bytes_free(d, outLen) }
         }
-        guard result == 0, let ptr = outData, outLen > 0 else { return nil }
-        return Data(bytes: ptr, count: Int(outLen))
+        if result == 0 {
+            if let ptr = outData, outLen > 0 {
+                return Data(bytes: ptr, count: Int(outLen))
+            } else {
+                return Data() // Trả về Data rỗng nếu file 0 byte
+            }
+        }
+        return nil
     }
 
     nonisolated private func ffi_write_dir_internal(pairingPath: String, sourceDir: String, targetDir: String) -> Bool {
@@ -334,9 +328,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return result == 0
     }
 
-    // ============================================================
-    // BYPASS ICLOUD
-    // ============================================================
     func bypassICloud() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
@@ -345,7 +336,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
         
         isProcessing = true
-        log("[*] Starting Bypass (Infinite Verify)...")
+        log("[*] Starting Bypass (Fast Verify)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -363,7 +354,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                             DispatchQueue.main.async { self.log("✅ Đã backup: \(file)") }
                             backedUp = true
                         } else {
-                            Thread.sleep(forTimeInterval: 1.0)
+                            Thread.sleep(forTimeInterval: 0.2)
                         }
                     }
                 }
@@ -380,7 +371,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 DispatchQueue.main.async { self.log("⏳ Đang ghi đè file rỗng...") }
                 _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: tmp.path, targetDir: self.accountsDir)
                 
-                Thread.sleep(forTimeInterval: 2.0)
+                Thread.sleep(forTimeInterval: 0.3) // Chạy nhanh hơn
                 
                 var allEmpty = true
                 for file in self.targetFiles {
@@ -394,8 +385,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 if allEmpty {
                     success = true
                 } else {
-                    DispatchQueue.main.async { self.log("⚠️ File chưa rỗng hoàn toàn, thử lại...") }
-                    Thread.sleep(forTimeInterval: 1.0)
+                    Thread.sleep(forTimeInterval: 0.2)
                 }
             }
             
@@ -409,9 +399,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
     }
 
-    // ============================================================
-    // RESTORE
-    // ============================================================
     func restoreOriginalAccounts() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
@@ -420,7 +407,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
         
         isProcessing = true
-        log("[*] Starting Restore (Infinite Verify)...")
+        log("[*] Starting Restore (Fast Verify)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -454,11 +441,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 DispatchQueue.main.async { self.log("⏳ Đang nạp file backup vào máy...") }
                 _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: stagingDir.path, targetDir: self.accountsDir)
                 
-                Thread.sleep(forTimeInterval: 2.0)
+                Thread.sleep(forTimeInterval: 0.3)
                 
                 var allExist = true
                 for file in self.targetFiles {
                     let path = "\(self.accountsDir)/\(file)"
+                    // Nếu nil tức là file không tồn tại
                     if self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path) == nil {
                         allExist = false
                         break
@@ -466,7 +454,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 }
                 
                 if allExist { success = true } 
-                else { Thread.sleep(forTimeInterval: 1.0) }
+                else { Thread.sleep(forTimeInterval: 0.2) }
             }
             
             // XÓA SẠCH APPLE ID
@@ -480,7 +468,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             var wipeSuccess = false
             while !wipeSuccess {
                 _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: emptyDir.path, targetDir: self.accountsDir)
-                Thread.sleep(forTimeInterval: 2.0)
+                Thread.sleep(forTimeInterval: 0.3)
                 
                 var allEmpty = true
                 for file in self.targetFiles {
@@ -490,7 +478,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                         break
                     }
                 }
-                if allEmpty { wipeSuccess = true } else { Thread.sleep(forTimeInterval: 1.0) }
+                if allEmpty { wipeSuccess = true } else { Thread.sleep(forTimeInterval: 0.2) }
             }
             
             DispatchQueue.main.async {
@@ -506,9 +494,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 }
 
-// ============================================================
-// LOCAL NETWORK AUTHORIZATION
-// ============================================================
 @MainActor
 final class LocalNetworkAuthorization {
     private var browser: NWBrowser?
