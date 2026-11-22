@@ -1,13 +1,49 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct DocumentPickerView: UIViewControllerRepresentable {
+    let onPick: (URL) -> Void
+    let onCancel: () -> Void
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onPick: (URL) -> Void
+        private let onCancel: () -> Void
+        
+        init(onPick: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first {
+                onPick(url)
+            }
+        }
+        
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var airlift = AirliftService.shared
     @State private var isConnected = false
     @State private var isProcessing = false
     @State private var showImporter = false
-    @State private var showManualPathAlert = false
-    @State private var manualPathInput = ""
     
     var body: some View {
         NavigationView {
@@ -42,28 +78,16 @@ struct ContentView: View {
                 VStack(spacing: 10) {
                     
                     // 1. Import Pairing File
-                    HStack(spacing: 8) {
-                        Button {
-                            airlift.logs += "[*] Đang mở trình chọn file...\n"
-                            showImporter = true
-                        } label: {
-                            Label("Import Pairing File", systemImage: "doc.badge.plus")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.purple)
-                        .disabled(isProcessing || airlift.isPairing)
-                        
-                        Button {
-                            manualPathInput = ""
-                            showManualPathAlert = true
-                        } label: {
-                            Image(systemName: "doc.on.clipboard")
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.purple)
-                        .disabled(isProcessing || airlift.isPairing)
+                    Button {
+                        airlift.logs += "[*] Mở Document Picker...\n"
+                        showImporter = true
+                    } label: {
+                        Label("Import Pairing File", systemImage: "doc.badge.plus")
+                            .frame(maxWidth: .infinity)
                     }
+                    .buttonStyle(.bordered)
+                    .tint(.purple)
+                    .disabled(isProcessing || airlift.isPairing)
                     
                     // 2. Pair on Device (iOS 27) - Bonjour
                     Button {
@@ -136,33 +160,17 @@ struct ContentView: View {
             }
             .navigationTitle("Bypassicl")
             .navigationBarTitleDisplayMode(.inline)
-            .fileImporter(
-                isPresented: $showImporter,
-                allowedContentTypes: [.item],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    if let url = urls.first {
+            .sheet(isPresented: $showImporter) {
+                DocumentPickerView(
+                    onPick: { url in
+                        showImporter = false
                         airlift.importPairingFile(from: url)
+                    },
+                    onCancel: {
+                        showImporter = false
+                        airlift.logs += "⏹ Đã hủy chọn file\n"
                     }
-                case .failure(let error):
-                    airlift.logs += "❌ File picker error: \(error.localizedDescription)\n"
-                }
-            }
-            .alert("Nhập Pairing Thủ Công", isPresented: $showManualPathAlert) {
-                TextField("Dán đường dẫn file hoặc nội dung plist/xml", text: $manualPathInput)
-                Button("Dán từ Clipboard") {
-                    if let clip = UIPasteboard.general.string {
-                        airlift.importPairingFromTextOrPath(clip)
-                    } else {
-                        airlift.logs += "❌ Clipboard trống\n"
-                    }
-                }
-                Button("Xác nhận") {
-                    airlift.importPairingFromTextOrPath(manualPathInput)
-                }
-                Button("Hủy", role: .cancel) {}
+                )
             }
         }
     }
