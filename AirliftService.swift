@@ -5,7 +5,7 @@ import Network
 import AVFoundation
 
 class AirliftService: ObservableObject {
-    static let shared = AirliftService.shared
+    static let shared = AirliftService()
     
     @Published var logs: String = "=== Bypassicl Log ===\n"
     @Published var isPairing = false
@@ -399,4 +399,25 @@ class AirliftService: ObservableObject {
         
         do {
             try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-            for file in target
+            for file in targetFiles {
+                let backupFileURL = backupDir.appendingPathComponent(file)
+                guard fm.fileExists(atPath: backupFileURL.path) else {
+                    log("❌ Backup file missing: \(file)")
+                    return
+                }
+                let stagingFileURL = stagingDir.appendingPathComponent(file)
+                try fm.copyItem(at: backupFileURL, to: stagingFileURL)
+            }
+            
+            if ffi_write_dir(sourceDir: stagingDir.path, targetDir: accountsDir) {
+                log("✅ Successfully restored original accounts! Reboot your device.")
+            } else {
+                log("❌ Failed to write restored files to device.")
+            }
+        } catch {
+            log("❌ Restore failed: \(error.localizedDescription)")
+        }
+        
+        try? fm.removeItem(at: stagingDir)
+    }
+}
