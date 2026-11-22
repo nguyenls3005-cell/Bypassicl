@@ -28,18 +28,19 @@
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <true/>
-    
-    <!-- Quyền Local Network (bắt buộc để Bonjour hoạt động) -->
-    <key>NSLocalNetworkUsageDescription</key>
-    <string>Bypassicl cần truy cập mạng cục bộ để pair với thiết bị qua Bonjour.</string>
-    
-    <!-- Các service Bonjour mà app sẽ dùng -->
-    <key>NSBonjourServices</key>
-    <array>
-        <string>_remotepairing._tcp</string>
-        <string>_companion-link._tcp</string>
-        <string>_airplay._tcp</string>
-        <string>_rp-tunnel._tcp</string>
-    </array>
+	
+	<!-- BẮT BUỘC CHO PAIR ON DEVICE -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Ứng dụng cần quyền mạng cục bộ để phát hiện thiết bị và thực hiện Pairing không dây qua Bonjour.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_remotepairing-pairable-host._tcp</string>
+	</array>
+	
+	<!-- BẮT BUỘC ĐỂ CHẠY NGẦM VÔ HẠN KHI PAIRING -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>
