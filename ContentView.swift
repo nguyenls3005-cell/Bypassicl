@@ -1,176 +1,119 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct DocumentPickerView: UIViewControllerRepresentable {
-    let onPick: (URL) -> Void
-    let onCancel: () -> Void
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onPick: onPick, onCancel: onCancel)
-    }
-    
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
-        picker.allowsMultipleSelection = false
-        picker.delegate = context.coordinator
-        return picker
-    }
-    
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-    
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        private let onPick: (URL) -> Void
-        private let onCancel: () -> Void
-        
-        init(onPick: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
-            self.onPick = onPick
-            self.onCancel = onCancel
-        }
-        
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            if let url = urls.first {
-                onPick(url)
-            }
-        }
-        
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            onCancel()
-        }
-    }
-}
-
 struct ContentView: View {
-    @StateObject private var airlift = AirliftService.shared
-    @State private var isConnected = false
-    @State private var isProcessing = false
-    @State private var showImporter = false
+    @ObservedObject var airlift = AirliftService.shared
+    @State private var isImporting = false
     
     var body: some View {
         NavigationView {
             VStack(spacing: 16) {
                 
-                // MARK: - Log
-                ScrollView {
-                    Text(airlift.logs)
-                        .font(.system(.footnote, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                }
-                .background(Color.black.opacity(0.85))
-                .foregroundColor(.green)
-                .cornerRadius(10)
-                .padding(.horizontal)
-                
-                // MARK: - PIN displayed when pairing
+                // Vùng hiển thị PIN (Chỉ hiện khi đang có mã)
                 if let pin = airlift.currentPin {
-                    VStack(spacing: 6) {
-                        Text("Enter this PIN on your iPhone")
+                    VStack(spacing: 4) {
+                        Text("PAIRING CODE")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(pin)
                             .font(.system(size: 42, weight: .bold, design: .monospaced))
-                            .foregroundColor(.green)
+                            .foregroundColor(.red)
+                            .tracking(8)
                     }
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 10)
                 }
                 
-                // MARK: - Action Buttons
-                VStack(spacing: 10) {
-                    
-                    // 1. Import Pairing File
-                    Button {
-                        airlift.logs += "[*] Opening Document Picker...\n"
-                        showImporter = true
-                    } label: {
-                        Label("Import Pairing File", systemImage: "doc.badge.plus")
-                            .frame(maxWidth: .infinity)
+                // Khung Log Console
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(airlift.logs)
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundColor(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .id("LogBottom")
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.purple)
-                    .disabled(isProcessing || airlift.isPairing)
-                    
-                    // 2. Pair on Device
-                    Button {
-                        airlift.startPairingOnDevice()
-                    } label: {
-                        Label(
-                            airlift.isPairing ? "Pairing... (Waiting for PIN)" : "Pair on Device (iOS 27)",
-                            systemImage: airlift.isPairing ? "antenna.radiowaves.left.and.right" : "link"
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(airlift.isPairing ? .orange : .cyan)
-                    .disabled(isProcessing || airlift.isPairing)
-                    
-                    // 3. Connect
-                    Button {
-                        isProcessing = true
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            let ok = airlift.connect()
-                            DispatchQueue.main.async {
-                                isConnected = ok
-                                isProcessing = false
-                            }
+                    .background(Color(UIColor.secondarySystemBackground))
+                    .cornerRadius(8)
+                    .onChange(of: airlift.logs) { _ in
+                        withAnimation {
+                            proxy.scrollTo("LogBottom", anchor: .bottom)
                         }
-                    } label: {
-                        Label(
-                            isConnected ? "Connected" : "Connect Airlift",
-                            systemImage: isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle"
-                        )
-                        .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(isConnected ? .green : .blue)
-                    .disabled(isProcessing || airlift.isPairing)
-                    
-                    // 4. Restore Original Accounts
-                    Button {
-                        isProcessing = true
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            airlift.restoreOriginalAccounts()
-                            DispatchQueue.main.async { isProcessing = false }
-                        }
-                    } label: {
-                        Label("Restore to Original", systemImage: "arrow.counterclockwise.circle.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.orange)
-                    .disabled(isProcessing || !isConnected || airlift.isPairing)
-                    
-                    // 5. Bypass iCloud
-                    Button {
-                        isProcessing = true
-                        DispatchQueue.global(qos: .userInitiated).async {
-                            airlift.bypassICloud()
-                            DispatchQueue.main.async { isProcessing = false }
-                        }
-                    } label: {
-                        Label("Bypass iCloud (Auto Backup & Overwrite)", systemImage: "flame.fill")
-                            .frame(maxWidth: .infinity)
-                            .fontWeight(.bold)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .disabled(isProcessing || !isConnected || airlift.isPairing)
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 12)
+                .frame(maxHeight: .infinity)
+                
+                // Khối Buttons
+                VStack(spacing: 12) {
+                    
+                    Button(action: { isImporting = true }) {
+                        Text("Import Pairing File")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    
+                    Button(action: { airlift.startPairingOnDevice() }) {
+                        Text("Pair on Device")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                    
+                    Button(action: {
+                        if airlift.connect() {
+                            airlift.alertMessage = "Kết nối Airlift thành công!"
+                            airlift.showAlert = true
+                        }
+                    }) {
+                        Text("Connect Airlift")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    
+                    HStack(spacing: 12) {
+                        Button(action: { airlift.restoreOriginalAccounts() }) {
+                            Text("Restore Gốc")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        
+                        Button(action: { airlift.bypassICloud() }) {
+                            Text("Bypass iCloud")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                    }
+                }
+                .disabled(airlift.isProcessing || airlift.isPairing) // Khóa nút khi đang chạy
             }
+            .padding()
             .navigationTitle("LSTool")
             .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showImporter) {
-                DocumentPickerView(
-                    onPick: { url in
-                        showImporter = false
-                        airlift.importPairingFile(from: url)
-                    },
-                    onCancel: {
-                        showImporter = false
-                        airlift.logs += "⏹ File selection cancelled\n"
-                    }
-                )
+            .fileImporter(
+                isPresented: $isImporting,
+                allowedContentTypes: [.data],
+                allowsMultipleSelection: false
+            ) { result in
+                if case .success(let urls) = result, let url = urls.first {
+                    airlift.importPairingFile(from: url)
+                }
+            }
+            // Popup thông báo
+            .alert("Thông Báo", isPresented: $airlift.showAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(airlift.alertMessage)
+            }
+            // Vòng xoay loading khi đang xử lý
+            .overlay {
+                if airlift.isProcessing {
+                    ProgressView("Đang xử lý...")
+                        .padding()
+                        .background(Color(UIColor.secondarySystemBackground))
+                        .cornerRadius(8)
+                        .shadow(radius: 5)
+                }
             }
         }
     }
