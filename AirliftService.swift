@@ -1,5 +1,6 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (StikPair Logic + iOS 26)
+// AirliftService.swift — Bypassicl (Ported from StikPair)
+// Yêu cầu target iOS 26.0
 // ============================================================
 
 import Foundation
@@ -53,7 +54,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // FFI CALLBACKS (Exact StikPair Signature)
+    // FFI CALLBACKS
     // ============================================================
     private static let logCallback: ALLogCallback = { ctx, msg in
         guard let msg = msg, let ctx = ctx else { return }
@@ -163,10 +164,10 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         
         Task {
-            guard await localNetwork.request() else {
-                self.isPairing = false
-                self.log("❌ Local Network permission required.")
-                return
+            // Check quyền. Nếu false (do user từ chối hoặc cache), vẫn cố chạy host.
+            let authorized = await localNetwork.request()
+            if !authorized {
+                self.log("⚠️ Không lấy được quyền Local Network. Thử chạy host trực tiếp...")
             }
             self.submitBackgroundTask()
         }
@@ -197,7 +198,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         DispatchQueue.global(qos: .userInitiated).async {
             var result = ALPairResult()
             let code = al_pairing_run_host(
-                "0.0.0.0", 0, "Bypassicl", "iPhone", outPath, nil,
+                "0.0.0.0", 0, "Bypassicl", "Mac17,7", outPath, nil,
                 AirliftService.readyCallback, AirliftService.pinCallback, ctx, &result
             )
             defer { al_pairing_result_free(&result) }
@@ -244,7 +245,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // ORIGINAL BYPASSICL FUNCTIONS
+    // CÁC HÀM CŨ CỦA BYPASSICL (Giữ nguyên)
     // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
@@ -403,7 +404,7 @@ final class LocalNetworkAuthorization {
 
     private let probeType = "_bypassiclprobe._tcp"
 
-    func request(timeout: TimeInterval = 60) async -> Bool {
+    func request(timeout: TimeInterval = 10) async -> Bool {
         await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             self.continuation = cont
 
@@ -415,7 +416,7 @@ final class LocalNetworkAuthorization {
             listener?.newConnectionHandler = { $0.cancel() }
             listener?.stateUpdateHandler = { [weak self] state in
                 if case .failed = state {
-                    MainActor.assumeIsolated { self?.finish(false) }
+                    Task { @MainActor in self?.finish(false) }
                 }
             }
             self.listener = listener
@@ -423,12 +424,12 @@ final class LocalNetworkAuthorization {
             let browser = NWBrowser(for: .bonjour(type: probeType, domain: nil), using: params)
             browser.stateUpdateHandler = { [weak self] state in
                 if case .failed = state {
-                    MainActor.assumeIsolated { self?.finish(false) }
+                    Task { @MainActor in self?.finish(false) }
                 }
             }
             browser.browseResultsChangedHandler = { [weak self] results, _ in
                 if !results.isEmpty {
-                    MainActor.assumeIsolated { self?.finish(true) }
+                    Task { @MainActor in self?.finish(true) }
                 }
             }
             self.browser = browser
@@ -437,7 +438,7 @@ final class LocalNetworkAuthorization {
             browser.start(queue: .main)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-                MainActor.assumeIsolated { self?.finish(false) }
+                Task { @MainActor in self?.finish(false) }
             }
         }
     }
