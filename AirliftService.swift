@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import UniformTypeIdentifiers
 import Network
+import AVFoundation
 
 class AirliftService: ObservableObject {
     static let shared = AirliftService()
@@ -13,6 +14,7 @@ class AirliftService: ObservableObject {
     @Published var lastDeviceName: String? = nil
     
     private var localNetBrowser: NWBrowser?
+    private var audioPlayer: AVAudioPlayer?
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
     
@@ -89,6 +91,7 @@ class AirliftService: ObservableObject {
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         
         DispatchQueue.main.async {
+            self.startKeepAliveAudio()
             self.triggerLocalNetworkPrompt()
         }
         
@@ -116,6 +119,7 @@ class AirliftService: ObservableObject {
             DispatchQueue.main.async {
                 self.localNetBrowser?.cancel()
                 self.localNetBrowser = nil
+                self.stopKeepAliveAudio()
                 self.isPairing = false
                 self.currentPin = nil
                 
@@ -161,11 +165,53 @@ class AirliftService: ObservableObject {
         }
     }
     
+    private func startKeepAliveAudio() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, options: [.mixWithOthers])
+            try session.setActive(true)
+            
+            // Tạo buffer WAV PCM im lặng 1 giây (8000Hz, mono, 16-bit)
+            let sampleRate: UInt32 = 8000
+            let numSamples: UInt32 = 8000
+            let dataSize = numSamples * 2
+            var wav = Data()
+            wav.append("RIFF".data(using: .ascii)!)
+            wav.append(withUnsafeBytes(of: (36 + dataSize).littleEndian) { Data($0) })
+            wav.append("WAVEfmt ".data(using: .ascii)!)
+            wav.append(withUnsafeBytes(of: UInt32(16).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: sampleRate.littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: (sampleRate * 2).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: UInt16(2).littleEndian) { Data($0) })
+            wav.append(withUnsafeBytes(of: UInt16(16).littleEndian) { Data($0) })
+            wav.append("data".data(using: .ascii)!)
+            wav.append(withUnsafeBytes(of: dataSize.littleEndian) { Data($0) })
+            wav.append(Data(count: Int(dataSize)))
+            
+            let player = try AVAudioPlayer(data: wav)
+            player.numberOfLoops = -1
+            player.volume = 0.01
+            player.play()
+            audioPlayer = player
+        } catch {
+            log("⚠️ Keep-alive audio lỗi: \(error.localizedDescription)")
+        }
+    }
+    
+    private func stopKeepAliveAudio() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+        try? AVAudioSession.sharedInstance().setActive(false)
+    }
+    
     func stopPairing() {
         // al_pairing_run_host là blocking, hiện không có API stop.
         // Chỉ reset UI state.
         localNetBrowser?.cancel()
         localNetBrowser = nil
+        stopKeepAliveAudio()
         isPairing = false
         currentPin = nil
         log("⏹ Đã hủy trạng thái pairing (host vẫn có thể đang chạy)")
