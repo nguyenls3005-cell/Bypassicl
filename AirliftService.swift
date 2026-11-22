@@ -14,7 +14,6 @@ class AirliftService: ObservableObject {
     @Published var lastDeviceName: String? = nil
     
     private var localNetBrowser: NWBrowser?
-    private var advertiseListener: NWListener?
     private var audioPlayer: AVAudioPlayer?
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
@@ -56,10 +55,7 @@ class AirliftService: ObservableObject {
         guard let ctx = ctx else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
         let sid = serviceId != nil ? String(cString: serviceId!) : "?"
-        service.log("📡 Bonjour ready: \(sid) : \(port)")
-        DispatchQueue.main.async {
-            service.startBonjourAdvertise(name: "Bypassicl", port: UInt16(clamping: port))
-        }
+        service.log("📡 Host ready: \(sid) : \(port)")
     }
     
     // MARK: - Import Pairing File
@@ -94,14 +90,14 @@ class AirliftService: ObservableObject {
         }
     }
     
-    // MARK: - Pair on Device (iOS 27) - Bonjour + Unlimited
+    // MARK: - Pair on Device (StikPair flow: Local Network + FFI host + Keep-Alive)
     func startPairingOnDevice() {
         guard !isPairing else { return }
         
         isPairing = true
         currentPin = nil
-        log("[*] Bắt đầu Pair on Device (Bonjour)...")
-        log("👉 Mở Settings → Developer Mode trên iPhone target và chờ PIN")
+        log("[*] Bắt đầu Pair on Device...")
+        log("👉 Cấp quyền Local Network, mở Settings → Privacy & Security → Developer Mode và chờ PIN")
         
         try? FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
         let outPath = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing").path
@@ -153,40 +149,6 @@ class AirliftService: ObservableObject {
         }
     }
     
-    private func startBonjourAdvertise(name: String, port: UInt16) {
-        advertiseListener?.cancel()
-        advertiseListener = nil
-        
-        do {
-            // Dùng .any để tránh lỗi error 48 (Address already in use) khi port của FFI đang mở
-            let listener = try NWListener(using: .tcp, on: .any)
-            listener.service = NWListener.Service(
-                name: name,
-                type: "_remotepairing-pairable-host._tcp",
-                domain: "local."
-            )
-            listener.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    if let actualPort = listener.port?.rawValue {
-                        self?.log("📣 Đang quảng bá Bonjour: \(name) (FFI port: \(port), mDNS port: \(actualPort))")
-                    }
-                case .failed(let err):
-                    self?.log("⚠️ Quảng bá Bonjour lỗi: \(err.localizedDescription)")
-                default:
-                    break
-                }
-            }
-            listener.newConnectionHandler = { conn in
-                conn.cancel()
-            }
-            advertiseListener = listener
-            listener.start(queue: .main)
-        } catch {
-            log("⚠️ Không mở được listener quảng bá: \(error.localizedDescription)")
-        }
-    }
-    
     private func triggerLocalNetworkPrompt() {
         localNetBrowser?.cancel()
         localNetBrowser = nil
@@ -197,7 +159,7 @@ class AirliftService: ObservableObject {
         )
         browser.stateUpdateHandler = { [weak self] state in
             if case .ready = state {
-                self?.log("🌐 Đã kích hoạt Local Network")
+                self?.log("🌐 Local Network sẵn sàng")
             }
         }
         localNetBrowser = browser
@@ -205,8 +167,6 @@ class AirliftService: ObservableObject {
     }
     
     private func stopPairingServices() {
-        advertiseListener?.cancel()
-        advertiseListener = nil
         localNetBrowser?.cancel()
         localNetBrowser = nil
         stopKeepAliveAudio()
