@@ -89,7 +89,7 @@ struct ContentView: View {
                     .tint(.purple)
                     .disabled(isProcessing || airlift.isPairing)
                     
-                    // 2. Pair on Device (iOS 27) - Bonjour
+                    // 2. Pair on Device
                     Button {
                         airlift.startPairingOnDevice()
                     } label: {
@@ -124,22 +124,22 @@ struct ContentView: View {
                     .tint(isConnected ? .green : .blue)
                     .disabled(isProcessing || airlift.isPairing)
                     
-                    // 4. Chỉ Backup
+                    // 4. Restore Tài Khoản Gốc (thay cho nút Chỉ Backup)
                     Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
-                            _ = airlift.backupAccounts()
+                            airlift.restoreOriginalAccounts()
                             DispatchQueue.main.async { isProcessing = false }
                         }
                     } label: {
-                        Label("Chỉ Backup (An toàn)", systemImage: "externaldrive.badge.timemachine")
+                        Label("Restore Tài Khoản Gốc", systemImage: "arrow.counterclockwise.circle.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
                     .disabled(isProcessing || !isConnected || airlift.isPairing)
                     
-                    // 5. Bypass
+                    // 5. Bypass (tự backup lần đầu rồi ghi đè)
                     Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
@@ -147,7 +147,7 @@ struct ContentView: View {
                             DispatchQueue.main.async { isProcessing = false }
                         }
                     } label: {
-                        Label("BYPASS iCLOUD (Ghi đè Accounts)", systemImage: "flame.fill")
+                        Label("BYPASS iCLOUD (Tự Backup & Ghi đè)", systemImage: "flame.fill")
                             .frame(maxWidth: .infinity)
                             .fontWeight(.bold)
                     }
