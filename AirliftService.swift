@@ -5,7 +5,7 @@ import Network
 import AVFoundation
 
 class AirliftService: ObservableObject {
-    static let shared = AirliftService()
+    static let shared = AirliftService.shared
     
     @Published var logs: String = "=== Bypassicl Log ===\n"
     @Published var isPairing = false
@@ -55,7 +55,7 @@ class AirliftService: ObservableObject {
         let pinStr = String(cString: pin)
         DispatchQueue.main.async {
             service.currentPin = pinStr
-            service.log("🔐 PIN: \(pinStr)  →  Vào Settings → Developer → nhập PIN này")
+            service.log("🔐 PIN: \(pinStr) → Go to Settings → Developer → enter this PIN")
         }
     }
     
@@ -84,28 +84,28 @@ class AirliftService: ObservableObject {
             }
             
             guard let data = fileData, !data.isEmpty else {
-                log("❌ Không đọc được dữ liệu từ file: \(url.lastPathComponent)")
+                log("❌ Could not read data from file: \(url.lastPathComponent)")
                 return
             }
             
             try data.write(to: dest, options: .atomic)
             DispatchQueue.main.async {
                 self.pairingFilePath = dest.path
-                self.log("✅ Đã import pairing file (\(data.count) bytes)")
+                self.log("✅ Pairing file imported successfully (\(data.count) bytes)")
             }
         } catch {
-            log("❌ Import pairing thất bại: \(error.localizedDescription)")
+            log("❌ Failed to import pairing file: \(error.localizedDescription)")
         }
     }
     
-    // MARK: - Pair on Device (StikPair flow: Local Network + FFI host + Keep-Alive)
+    // MARK: - Pair on Device
     func startPairingOnDevice() {
         guard !isPairing else { return }
         
         isPairing = true
         currentPin = nil
-        log("[*] Bắt đầu Pair on Device...")
-        log("👉 Cấp quyền Local Network, mở Settings → Privacy & Security → Developer Mode và chờ PIN")
+        log("[*] Starting Pair on Device...")
+        log("👉 Grant Local Network permission, open Settings → Privacy & Security → Developer Mode and wait for PIN")
         
         try? FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
         let outPath = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing").path
@@ -142,7 +142,7 @@ class AirliftService: ObservableObject {
                 if code == 0 {
                     if let path = result.pairing_file_path {
                         self.pairingFilePath = String(cString: path)
-                        self.log("✅ Pairing thành công!")
+                        self.log("✅ Pairing successful!")
                         self.log("📁 File: \(self.pairingFilePath!)")
                     }
                     if let name = result.device_name {
@@ -150,8 +150,8 @@ class AirliftService: ObservableObject {
                         self.log("📱 Device: \(self.lastDeviceName!)")
                     }
                 } else {
-                    let err = result.error != nil ? String(cString: result.error!) : "unknown"
-                    self.log("❌ Pairing thất bại: \(err)")
+                    let err = result.error != nil ? String(cString: result.error!) : "unknown error"
+                    self.log("❌ Pairing failed: \(err)")
                 }
             }
         }
@@ -167,7 +167,7 @@ class AirliftService: ObservableObject {
         )
         browser.stateUpdateHandler = { [weak self] state in
             if case .ready = state {
-                self?.log("🌐 Local Network sẵn sàng")
+                self?.log("🌐 Local Network ready")
             }
         }
         localNetBrowser = browser
@@ -210,7 +210,7 @@ class AirliftService: ObservableObject {
             player.play()
             audioPlayer = player
         } catch {
-            log("⚠️ Keep-alive audio lỗi: \(error.localizedDescription)")
+            log("⚠️ Keep-alive audio error: \(error.localizedDescription)")
         }
     }
     
@@ -224,12 +224,12 @@ class AirliftService: ObservableObject {
         stopPairingServices()
         isPairing = false
         currentPin = nil
-        log("⏹ Đã hủy trạng thái pairing")
+        log("⏹ Pairing cancelled")
     }
     
-    // MARK: - Connect (dùng pairing đã có)
+    // MARK: - Connect
     func connect() -> Bool {
-        log("[*] Kiểm tra pairing...")
+        log("[*] Checking pairing...")
         
         if pairingFilePath == nil {
             let candidates = [
@@ -247,15 +247,15 @@ class AirliftService: ObservableObject {
         }
         
         guard let path = pairingFilePath, FileManager.default.fileExists(atPath: path) else {
-            log("❌ Chưa có pairing file. Hãy Pair on Device hoặc Import file.")
+            log("❌ No pairing file found. Please Pair on Device or import a file.")
             return false
         }
         
-        log("✅ Dùng pairing: \(path)")
+        log("✅ Using pairing file: \(path)")
         return true
     }
     
-    // MARK: - Grappa (giữ nguyên)
+    // MARK: - Grappa Token
     private func generateGrappaToken() -> Data? {
         let maxLen = 1024
         var buffer = [UInt8](repeating: 0, count: maxLen)
@@ -271,7 +271,7 @@ class AirliftService: ObservableObject {
         }
     }
     
-    // MARK: - FFI helpers
+    // MARK: - FFI Helpers
     private func ffi_read_file(_ iosPath: String) -> Data? {
         guard let pairing = pairingFilePath else { return nil }
         
@@ -280,7 +280,15 @@ class AirliftService: ObservableObject {
         var outError: UnsafeMutablePointer<CChar>? = nil
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         
-        let result = al_exploit_read_file(pairing, iosPath, AirliftService.logCallback, ctx, &outData, &outLen, &outError)
+        let result = al_exploit_read_file(
+            pairing,
+            iosPath,
+            AirliftService.logCallback,
+            ctx,
+            &outData,
+            &outLen,
+            &outError
+        )
         
         defer {
             if let e = outError { al_string_free(e) }
@@ -288,8 +296,8 @@ class AirliftService: ObservableObject {
         }
         
         guard result == 0, let ptr = outData, outLen > 0 else {
-            let err = outError != nil ? String(cString: outError!) : "unknown"
-            log("❌ Đọc \(iosPath) thất bại: \(err)")
+            let err = outError != nil ? String(cString: outError!) : "unknown error"
+            log("❌ Failed to read \(iosPath): \(err)")
             return nil
         }
         return Data(bytes: ptr, count: Int(outLen))
@@ -301,112 +309,18 @@ class AirliftService: ObservableObject {
         var outError: UnsafeMutablePointer<CChar>? = nil
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         
-        let result = al_exploit_write_dir(pairing, sourceDir, targetDir, AirliftService.logCallback, ctx, &outError)
+        let result = al_exploit_write_dir(
+            pairing,
+            sourceDir,
+            targetDir,
+            AirliftService.logCallback,
+            ctx,
+            &outError
+        )
         
         defer { if let e = outError { al_string_free(e) } }
         
-        if result != 0 {
-            let err = outError != nil ? String(cString: outError!) : "unknown"
-            log("❌ Ghi đè thất bại: \(err)")
+        guard result == 0 else {
+            let err = outError != nil ? String(cString: outError!) : "unknown error"
+            log("❌ Failed to write files: \(err)")
             return false
-        }
-        return true
-    }
-    
-    // MARK: - Auto Backup (chỉ chạy lần đầu khi chưa có bản backup đầy đủ)
-    private func autoBackupAccountsIfNeeded() -> Bool {
-        if hasCompleteBackup {
-            log("ℹ️ Đã có bản backup gốc trong AccountsBackup, giữ nguyên bản gốc.")
-            return true
-        }
-        
-        log("[*] Tự động backup 3 file Accounts trước khi Bypass...")
-        do {
-            try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
-        } catch {
-            log("❌ Không tạo được thư mục backup: \(error.localizedDescription)")
-            return false
-        }
-        
-        for file in targetFiles {
-            let path = "\(accountsDir)/\(file)"
-            guard let data = ffi_read_file(path) else {
-                log("❌ Tự động backup thất bại ở file: \(file)")
-                return false
-            }
-            do {
-                try data.write(to: backupDir.appendingPathComponent(file), options: .atomic)
-                log("✅ Đã lưu backup \(file) (\(data.count) bytes)")
-            } catch {
-                log("❌ Ghi file backup \(file) lỗi: \(error.localizedDescription)")
-                return false
-            }
-        }
-        
-        log("✅ Auto backup hoàn tất vào: \(backupDir.path)")
-        return true
-    }
-    
-    // MARK: - Bypass (Tự động backup lần đầu -> Ghi đè rỗng)
-    func bypassICloud() {
-        log("[*] Bắt đầu Bypass...")
-        guard autoBackupAccountsIfNeeded() else {
-            log("❌ Hủy Bypass vì tự động backup thất bại")
-            return
-        }
-        
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("empty_\(UUID().uuidString)")
-        do {
-            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-            for file in targetFiles {
-                try Data().write(to: tmp.appendingPathComponent(file), options: .atomic)
-            }
-        } catch {
-            log("❌ Không tạo được dữ liệu ghi đè: \(error.localizedDescription)")
-            return
-        }
-        
-        if ffi_write_dir(sourceDir: tmp.path, targetDir: accountsDir) {
-            log("🎉 BYPASS THÀNH CÔNG! Reboot thiết bị.")
-        } else {
-            log("❌ Ghi đè thất bại")
-        }
-        try? FileManager.default.removeItem(at: tmp)
-    }
-    
-    // MARK: - Restore (Trả nguyên vẹn 3 file sqlite đã backup về Accounts)
-    func restoreOriginalAccounts() {
-        log("[*] Khôi phục tài khoản gốc từ bản backup...")
-        
-        let fm = FileManager.default
-        let stagingDir = FileManager.default.temporaryDirectory.appendingPathComponent("restore_\(UUID().uuidString)")
-        
-        do {
-            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-            for file in targetFiles {
-                let srcURL = backupDir.appendingPathComponent(file)
-                guard fm.fileExists(atPath: srcURL.path) else {
-                    log("❌ Thiếu file backup: \(file)")
-                    try? fm.removeItem(at: stagingDir)
-                    return
-                }
-                let data = try Data(contentsOf: srcURL)
-                let dstURL = stagingDir.appendingPathComponent(file)
-                try data.write(to: dstURL, options: .atomic)
-                log("📦 Chuẩn bị restore \(file) (\(data.count) bytes)")
-            }
-        } catch {
-            log("❌ Chuẩn bị file restore thất bại: \(error.localizedDescription)")
-            try? fm.removeItem(at: stagingDir)
-            return
-        }
-        
-        if ffi_write_dir(sourceDir: stagingDir.path, targetDir: accountsDir) {
-            log("🎉 RESTORE THÀNH CÔNG! Đã trả lại nguyên vẹn 3 file sqlite. Reboot thiết bị.")
-        } else {
-            log("❌ Restore thất bại")
-        }
-        
-        try? fm.removeItem(at: stagingDir)
-    }
-}
