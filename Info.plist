@@ -2,9 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- ============================================================
-         Bundle identity
-         ============================================================ -->
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleExecutable</key>
@@ -21,10 +18,6 @@
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
-
-    <!-- ============================================================
-         Platform
-         ============================================================ -->
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>UILaunchScreen</key>
@@ -35,37 +28,32 @@
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
-    <key>UISupportedInterfaceOrientations~ipad</key>
-    <array>
-        <string>UIInterfaceOrientationPortrait</string>
-        <string>UIInterfaceOrientationPortraitUpsideDown</string>
-        <string>UIInterfaceOrientationLandscapeLeft</string>
-        <string>UIInterfaceOrientationLandscapeRight</string>
-    </array>
 
-    <!-- ============================================================
-         File sharing — share pairing file qua Files.app
-         ============================================================ -->
+    <!-- Giữ nguyên phần share file -->
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <true/>
 
-    <!-- ============================================================
-         BẮT BUỘC — Pair on Device over Bonjour
-         ============================================================ -->
+    <!-- Khai báo quyền Local Network -->
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Ứng dụng cần quyền mạng cục bộ để phát hiện thiết bị và thực hiện Pairing không dây qua Bonjour.</string>
-
+    <string>Bypassicl uses your local network to discover devices and complete pairing.</string>
+    
+    <!-- CỰC KỲ QUAN TRỌNG: Phải khớp 100% với code -->
     <key>NSBonjourServices</key>
     <array>
         <string>_remotepairing-pairable-host._tcp</string>
-        <string>_remotepairing._tcp</string>
+        <string>_remotepairing-manual-pairing._tcp</string>
+        <string>_bypassiclprobe._tcp</string>
     </array>
 
-    <!-- ============================================================
-         BẮT BUỘC — giữ tiến trình sống khi Pairing ở background
-         ============================================================ -->
+    <!-- Yêu cầu cho Background Task (iOS 26) -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>$(PRODUCT_BUNDLE_IDENTIFIER).pairing</string>
+    </array>
+
+    <!-- Audio keep alive -->
     <key>UIBackgroundModes</key>
     <array>
         <string>audio</string>
