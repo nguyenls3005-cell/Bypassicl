@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Ported from StikPair)
+// AirliftService.swift — Bypassicl (StikPair Logic + iOS 26)
 // ============================================================
 
 import Foundation
@@ -11,6 +11,7 @@ import UIKit
 import UserNotifications
 import BackgroundTasks
 
+@MainActor
 class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     static let shared = AirliftService()
     
@@ -47,10 +48,8 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     private func log(_ message: String) {
-        DispatchQueue.main.async {
-            self.logs += message + "\n"
-            print(message)
-        }
+        self.logs += message + "\n"
+        print(message)
     }
     
     // ============================================================
@@ -59,7 +58,9 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     private static let logCallback: ALLogCallback = { ctx, msg in
         guard let msg = msg, let ctx = ctx else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
-        service.log("[Airlift] \(String(cString: msg))")
+        DispatchQueue.main.async {
+            service.log("[Airlift] \(String(cString: msg))")
+        }
     }
     
     private static let pinCallback: ALPairPinCb = { pin, ctx in
@@ -73,7 +74,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
     }
     
-    // FIX: Exact StikPair signature with keys, vals, count
     private static let readyCallback: ALPairReadyCb = { ctx, serviceID, port, keys, vals, count in
         guard let ctx = ctx, let serviceID = serviceID else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
@@ -93,13 +93,13 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // BACKGROUND TASK & ADVERTISING (StikPair Logic)
+    // BACKGROUND TASK & ADVERTISING
     // ============================================================
     nonisolated private func registerBackgroundTask() {
         let taskId = (Bundle.main.bundleIdentifier ?? "com.bypassicl.app") + ".pairing"
         BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: DispatchQueue.main) { task in
             guard let task = task as? BGContinuedProcessingTask else { return }
-            DispatchQueue.main.async {
+            MainActor.assumeIsolated {
                 AirliftService.shared.runPairing(task: task)
             }
         }
@@ -168,9 +168,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 self.log("❌ Local Network permission required.")
                 return
             }
-            DispatchQueue.main.async {
-                self.submitBackgroundTask()
-            }
+            self.submitBackgroundTask()
         }
     }
     
@@ -184,10 +182,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         task?.progress.completedUnitCount = 5
         task?.expirationHandler = { [weak self] in
             guard let self = self else { return }
-            self.finishTask(success: false)
-            if self.isPairing {
-                self.log("❌ Background time expired.")
-                self.isPairing = false
+            Task { @MainActor in
+                self.finishTask(success: false)
+                if self.isPairing {
+                    self.log("❌ Background time expired.")
+                    self.isPairing = false
+                }
             }
         }
         
@@ -244,7 +244,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // ORIGINAL BYPASSICL FUNCTIONS (Kept intact)
+    // ORIGINAL BYPASSICL FUNCTIONS
     // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
@@ -272,10 +272,8 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             try FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
             let dest = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing")
             try Data(contentsOf: url).write(to: dest, options: .atomic)
-            DispatchQueue.main.async {
-                self.pairingFilePath = dest.path
-                self.log("✅ Pairing file imported")
-            }
+            self.pairingFilePath = dest.path
+            self.log("✅ Pairing file imported")
         } catch {
             log("❌ Import failed: \(error.localizedDescription)")
         }
@@ -417,7 +415,7 @@ final class LocalNetworkAuthorization {
             listener?.newConnectionHandler = { $0.cancel() }
             listener?.stateUpdateHandler = { [weak self] state in
                 if case .failed = state {
-                    Task { @MainActor in self?.finish(false) }
+                    MainActor.assumeIsolated { self?.finish(false) }
                 }
             }
             self.listener = listener
@@ -425,12 +423,12 @@ final class LocalNetworkAuthorization {
             let browser = NWBrowser(for: .bonjour(type: probeType, domain: nil), using: params)
             browser.stateUpdateHandler = { [weak self] state in
                 if case .failed = state {
-                    Task { @MainActor in self?.finish(false) }
+                    MainActor.assumeIsolated { self?.finish(false) }
                 }
             }
             browser.browseResultsChangedHandler = { [weak self] results, _ in
                 if !results.isEmpty {
-                    Task { @MainActor in self?.finish(true) }
+                    MainActor.assumeIsolated { self?.finish(true) }
                 }
             }
             self.browser = browser
@@ -439,7 +437,7 @@ final class LocalNetworkAuthorization {
             browser.start(queue: .main)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
-                Task { @MainActor in self?.finish(false) }
+                MainActor.assumeIsolated { self?.finish(false) }
             }
         }
     }
