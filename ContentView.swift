@@ -13,7 +13,7 @@ struct ContentView: View {
                     
                     // 1. KHỐI TRẠNG THÁI (HEADER)
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("BypassLS")
+                        Text("Bypass iCloud LSNguyen")
                             .font(.largeTitle)
                             .fontWeight(.bold)
                             .foregroundColor(.primary)
@@ -53,22 +53,31 @@ struct ContentView: View {
                                 .padding()
                                 .background(Color.orange.opacity(0.15))
                                 .foregroundColor(.orange)
-                                .cornerRadius(10)
+                                .cornerRadius(12)
                         }
                         .disabled(airlift.isPairing || airlift.isProcessing)
                         
-                        // VPN Local Toggle
-                        Toggle(isOn: $isVPNLocalOn) {
-                            VStack(alignment: .leading) {
-                                Text("VPN local")
-                                    .font(.subheadline.bold())
-                                Text("Peer 10.7.0.1")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                        // Nút VPN Local trong suốt
+                        Button(action: { isVPNLocalOn.toggle() }) {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text("VPN local")
+                                        .font(.subheadline.bold())
+                                        .foregroundColor(.primary)
+                                    Text("Peer 10.7.0.1")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: isVPNLocalOn ? "checkmark" : "xmark")
+                                    .foregroundColor(isVPNLocalOn ? .green : .red)
+                                    .font(.title3.bold())
                             }
+                            .padding()
+                            .background(Color.clear)
+                            .contentShape(Rectangle())
                         }
-                        .toggleStyle(SwitchToggleStyle(tint: .orange))
-                        .padding(.top, 4)
+                        .buttonStyle(.plain)
                         
                         if airlift.isProcessing && !isVPNLocalOn {
                             Text("⚠️ Vui lòng bật VPN Local để quá trình chạy ổn định!")
@@ -78,7 +87,7 @@ struct ContentView: View {
                     }
                     .padding()
                     .background(Color(UIColor.secondarySystemGroupedBackground))
-                    .cornerRadius(16)
+                    .cornerRadius(16) // Bo tròn card
                     
                     // 2. CHỌN CHỨC NĂNG
                     Text("Chọn chức năng")
@@ -95,9 +104,9 @@ struct ContentView: View {
                     }
                     .padding()
                     .background(Color(UIColor.secondarySystemGroupedBackground))
-                    .cornerRadius(12)
+                    .cornerRadius(12) // Bo tròn nút chọn
                     
-                    // 3. NÚT HÀNH ĐỘNG (Màu cam trong suốt)
+                    // 3. NÚT HÀNH ĐỘNG
                     VStack(spacing: 12) {
                         Button(action: {
                             airlift.log("🔥 Bắt đầu chạy Bypass Apple ID...")
@@ -107,9 +116,9 @@ struct ContentView: View {
                                 .font(.headline)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding()
-                                .background(Color.orange.opacity(0.7))
+                                .background(Color.orange.opacity(0.8))
                                 .foregroundColor(.white)
-                                .cornerRadius(12)
+                                .cornerRadius(16) // Bo tròn nút
                         }
                         .disabled(airlift.isProcessing || airlift.isPairing)
                         
@@ -121,14 +130,14 @@ struct ContentView: View {
                                 .font(.headline)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding()
-                                .background(Color.orange.opacity(0.7))
+                                .background(Color.orange.opacity(0.8))
                                 .foregroundColor(.white)
-                                .cornerRadius(12)
+                                .cornerRadius(16) // Bo tròn nút
                         }
                         .disabled(airlift.isProcessing || airlift.isPairing)
                     }
                     
-                    // 4. LOG (Tiến trình)
+                    // 4. LOG
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("Tiến trình")
@@ -156,7 +165,7 @@ struct ContentView: View {
                             }
                             .frame(height: 200)
                             .background(Color(UIColor.secondarySystemGroupedBackground))
-                            .cornerRadius(12)
+                            .cornerRadius(16) // Bo tròn khung log
                             .onChange(of: airlift.logs) { _ in
                                 withAnimation {
                                     proxy.scrollTo("LogBottom", anchor: .bottom)
