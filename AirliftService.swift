@@ -14,6 +14,7 @@ class AirliftService: ObservableObject {
     @Published var lastDeviceName: String? = nil
     
     private var localNetBrowser: NWBrowser?
+    private var netServiceBrowser: NetServiceBrowser?
     private var audioPlayer: AVAudioPlayer?
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
@@ -60,21 +61,65 @@ class AirliftService: ObservableObject {
     
     // MARK: - Import Pairing File
     func importPairingFile(from url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        
         do {
-            // Bắt đầu access security-scoped resource
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            
-            let data = try Data(contentsOf: url)
+            try FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
             let dest = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing")
-            try data.write(to: dest)
             
+            var fileData: Data? = try? Data(contentsOf: url)
+            if fileData == nil {
+                var coordError: NSError?
+                NSFileCoordinator().coordinate(readingItemAt: url, options: .withoutChanges, error: &coordError) { newURL in
+                    fileData = try? Data(contentsOf: newURL)
+                }
+            }
+            
+            guard let data = fileData, !data.isEmpty else {
+                log("❌ Không đọc được dữ liệu từ file: \(url.lastPathComponent)")
+                return
+            }
+            
+            try data.write(to: dest, options: .atomic)
             DispatchQueue.main.async {
                 self.pairingFilePath = dest.path
                 self.log("✅ Đã import pairing file (\(data.count) bytes)")
             }
         } catch {
             log("❌ Import pairing thất bại: \(error.localizedDescription)")
+        }
+    }
+    
+    func importPairingFromTextOrPath(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            log("❌ Dữ liệu nhập trống")
+            return
+        }
+        
+        do {
+            try FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
+            let dest = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing")
+            
+            if FileManager.default.fileExists(atPath: trimmed) {
+                let data = try Data(contentsOf: URL(fileURLWithPath: trimmed))
+                try data.write(to: dest, options: .atomic)
+                DispatchQueue.main.async {
+                    self.pairingFilePath = dest.path
+                    self.log("✅ Đã nạp từ đường dẫn (\(data.count) bytes)")
+                }
+            } else if let data = trimmed.data(using: .utf8), trimmed.contains("plist") || trimmed.contains("<dict>") {
+                try data.write(to: dest, options: .atomic)
+                DispatchQueue.main.async {
+                    self.pairingFilePath = dest.path
+                    self.log("✅ Đã lưu nội dung pairing (\(data.count) bytes)")
+                }
+            } else {
+                log("❌ Đường dẫn không tồn tại hoặc nội dung không phải plist pairing")
+            }
+        } catch {
+            log("❌ Lỗi lưu pairing: \(error.localizedDescription)")
         }
     }
     
@@ -87,6 +132,7 @@ class AirliftService: ObservableObject {
         log("[*] Bắt đầu Pair on Device (Bonjour)...")
         log("👉 Mở Settings → Developer Mode trên iPhone target và chờ PIN")
         
+        try? FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
         let outPath = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing").path
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         
@@ -98,16 +144,13 @@ class AirliftService: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             var result = ALPairResult()
             
-            // port = 0 → OS tự chọn
-            // bind_addr = "0.0.0.0" → listen all interfaces
-            // name/model có thể tùy chỉnh
             let code = al_pairing_run_host(
                 "0.0.0.0",
                 0,
                 "Bypassicl",
                 "iPhone",
                 outPath,
-                nil,                    // host_alt_irk_hex (lần đầu = nil)
+                nil,
                 AirliftService.readyCallback,
                 AirliftService.pinCallback,
                 ctx,
@@ -117,8 +160,7 @@ class AirliftService: ObservableObject {
             defer { al_pairing_result_free(&result) }
             
             DispatchQueue.main.async {
-                self.localNetBrowser?.cancel()
-                self.localNetBrowser = nil
+                self.stopNetworkProbes()
                 self.stopKeepAliveAudio()
                 self.isPairing = false
                 self.currentPin = nil
@@ -142,8 +184,12 @@ class AirliftService: ObservableObject {
     }
     
     private func triggerLocalNetworkPrompt() {
-        localNetBrowser?.cancel()
-        localNetBrowser = nil
+        stopNetworkProbes()
+        
+        let nsBrowser = NetServiceBrowser()
+        nsBrowser.includesPeerToPeer = true
+        nsBrowser.searchForServices(ofType: "_remotepairing-pairable-host._tcp.", inDomain: "local.")
+        netServiceBrowser = nsBrowser
         
         let browser = NWBrowser(
             for: .bonjour(type: "_remotepairing-pairable-host._tcp", domain: "local."),
@@ -156,13 +202,13 @@ class AirliftService: ObservableObject {
         }
         localNetBrowser = browser
         browser.start(queue: .main)
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self, weak browser] in
-            if self?.localNetBrowser === browser {
-                browser?.cancel()
-                self?.localNetBrowser = nil
-            }
-        }
+    }
+    
+    private func stopNetworkProbes() {
+        localNetBrowser?.cancel()
+        localNetBrowser = nil
+        netServiceBrowser?.stop()
+        netServiceBrowser = nil
     }
     
     private func startKeepAliveAudio() {
@@ -171,7 +217,6 @@ class AirliftService: ObservableObject {
             try session.setCategory(.playback, options: [.mixWithOthers])
             try session.setActive(true)
             
-            // Tạo buffer WAV PCM im lặng 1 giây (8000Hz, mono, 16-bit)
             let sampleRate: UInt32 = 8000
             let numSamples: UInt32 = 8000
             let dataSize = numSamples * 2
@@ -207,14 +252,11 @@ class AirliftService: ObservableObject {
     }
     
     func stopPairing() {
-        // al_pairing_run_host là blocking, hiện không có API stop.
-        // Chỉ reset UI state.
-        localNetBrowser?.cancel()
-        localNetBrowser = nil
+        stopNetworkProbes()
         stopKeepAliveAudio()
         isPairing = false
         currentPin = nil
-        log("⏹ Đã hủy trạng thái pairing (host vẫn có thể đang chạy)")
+        log("⏹ Đã hủy trạng thái pairing")
     }
     
     // MARK: - Connect (dùng pairing đã có)
@@ -222,7 +264,6 @@ class AirliftService: ObservableObject {
         log("[*] Kiểm tra pairing...")
         
         if pairingFilePath == nil {
-            // Tự tìm trong Documents
             let candidates = [
                 "pairingRecord.mobiledevicepairing",
                 "pairingRecord.plist",
