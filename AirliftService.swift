@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Clean Bypass & Full Restore)
+// AirliftService.swift — Bypassicl (Full Complete Version)
 // ============================================================
 
 import Foundation
@@ -415,24 +415,33 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return result == 0
     }
 
-    // Tạo file SQLite header hợp lệ (không có bản ghi tài khoản cũ) để tránh crash daemon
-    nonisolated private func makeCleanSQLiteData() -> Data {
-        var db = Data(count: 4096)
-        let header: [UInt8] = [
-            0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
-            0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x2E, 0x7A, 0x00
+    nonisolated private func sanitizeAccountData(_ originalData: Data) -> Data {
+        guard !originalData.isEmpty else { return originalData }
+        var bytes = [UInt8](originalData)
+        let markers = [
+            "appleid", "icloud", "@icloud.com", "@me.com", "@mac.com",
+            "@gmail.com", "authToken", "password", "dsPrsID", "altDSID"
         ]
-        db.replaceSubrange(0..<header.count, with: header)
-        return db
+        for marker in markers {
+            guard let pattern = marker.data(using: .utf8), !pattern.isEmpty else { continue }
+            let patBytes = [UInt8](pattern)
+            if bytes.count < patBytes.count { continue }
+            var i = 0
+            while i <= bytes.count - patBytes.count {
+                let slice = bytes[i..<(i + patBytes.count)]
+                if String(bytes: slice, encoding: .utf8)?.lowercased() == marker.lowercased() {
+                    for j in i..<(i + patBytes.count) { bytes[j] = 0x00 }
+                    i += patBytes.count
+                } else {
+                    i += 1
+                }
+            }
+        }
+        return Data(bytes)
     }
 
     // ============================================================
-    // BYPASS LÀNH: TỰ BACKUP 3 FILE SQLITE -> LÀM SẠCH ĐỂ ĐĂNG NHẬP ACC KHÁC
+    // BYPASS: BACKUP 3 FILE -> LÀM SẠCH & GHI ĐÈ LẠI 3 FILE
     // ============================================================
     func bypassICloud() {
         guard !isProcessing else { return }
@@ -443,7 +452,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Bypass lành (Backup 3 sqlite & làm sạch tài khoản cũ)...")
+        log("[*] Bắt đầu Bypass (Backup 3 file & ghi đè lại 3 file)...")
         
         let backupURL = self.backupDir
         let alreadyBackedUp = self.hasCompleteBackup
@@ -454,7 +463,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             guard let self = self else { return }
             let fm = FileManager.default
             
-            // 1. Tự động backup đủ 3 file sqlite lần đầu vào AccountsBackup
             if !alreadyBackedUp {
                 do {
                     try fm.createDirectory(at: backupURL, withIntermediateDirectories: true)
@@ -467,12 +475,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                     return
                 }
                 
-                DispatchQueue.main.async { self.log("[*] Đang backup 3 file sqlite gốc...") }
+                DispatchQueue.main.async { self.log("[*] Đang backup 3 file gốc...") }
                 for file in files {
                     let remotePath = "\(remoteAccountsDir)/\(file)"
                     guard let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: remotePath) else {
                         DispatchQueue.main.async {
-                            self.log("❌ Backup thất bại tại \(file), hủy Bypass để giữ nguyên bản gốc.")
+                            self.log("❌ Backup thất bại tại \(file), hủy Bypass.")
                             self.presentAlert("Backup thất bại tại \(file).")
                             self.isProcessing = false
                         }
@@ -483,7 +491,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                         DispatchQueue.main.async { self.log("✅ Backup \(file) (\(data.count) bytes)") }
                     } catch {
                         DispatchQueue.main.async {
-                            self.log("❌ Ghi file backup \(file) lỗi: \(error.localizedDescription)")
+                            self.log("❌ Lưu backup \(file) lỗi: \(error.localizedDescription)")
                             self.presentAlert("Lỗi lưu file backup \(file).")
                             self.isProcessing = false
                         }
@@ -494,18 +502,21 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 DispatchQueue.main.async { self.log("ℹ️ Đã có đủ 3 file trong AccountsBackup, giữ nguyên bản gốc.") }
             }
             
-            // 2. Tạo bộ file sạch (header SQLite hợp lệ + shm/wal rỗng) để không crash daemon
-            let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_accounts_\(UUID().uuidString)")
+            let bypassDir = fm.temporaryDirectory.appendingPathComponent("bypass_\(UUID().uuidString)")
             do {
-                try fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
-                try self.makeCleanSQLiteData().write(to: cleanDir.appendingPathComponent("Accounts3.sqlite"), options: .atomic)
-                try Data().write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-shm"), options: .atomic)
-                try Data().write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-wal"), options: .atomic)
+                try fm.createDirectory(at: bypassDir, withIntermediateDirectories: true)
+                for file in files {
+                    let srcURL = backupURL.appendingPathComponent(file)
+                    let rawData = try Data(contentsOf: srcURL)
+                    let cleanedData = (file == "Accounts3.sqlite") ? self.sanitizeAccountData(rawData) : Data()
+                    try cleanedData.write(to: bypassDir.appendingPathComponent(file), options: .atomic)
+                    DispatchQueue.main.async { self.log("🧹 Đã xử lý \(file) (\(cleanedData.count) bytes)") }
+                }
             } catch {
-                try? fm.removeItem(at: cleanDir)
+                try? fm.removeItem(at: bypassDir)
                 DispatchQueue.main.async {
-                    self.log("❌ Lỗi tạo bộ file sạch: \(error.localizedDescription)")
-                    self.presentAlert("Lỗi tạo bộ file sạch.")
+                    self.log("❌ Lỗi tạo file bypass: \(error.localizedDescription)")
+                    self.presentAlert("Lỗi tạo file bypass.")
                     self.isProcessing = false
                 }
                 return
@@ -513,16 +524,16 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             
             let ok = self.ffi_write_dir_internal(
                 pairingPath: pairingPath,
-                sourceDir: cleanDir.path,
+                sourceDir: bypassDir.path,
                 targetDir: remoteAccountsDir
             )
-            try? fm.removeItem(at: cleanDir)
+            try? fm.removeItem(at: bypassDir)
             
             Thread.sleep(forTimeInterval: 0.5)
             
             DispatchQueue.main.async {
                 if ok {
-                    self.log("🎉 BYPASS LÀNH HOÀN TẤT! Thoát hẳn app Cài đặt rồi mở lại để kiểm tra & đăng nhập Apple ID khác.")
+                    self.log("🎉 BYPASS HOÀN TẤT! Tắt hẳn app Cài đặt rồi mở lại để kiểm tra.")
                     self.presentAlert("Bypass Hoàn Tất! Hãy tắt hẳn Cài đặt và mở lại.")
                 } else {
                     self.log("❌ Bypass thất bại khi ghi vào \(remoteAccountsDir).")
@@ -534,7 +545,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // RESTORE: LẤY 3 FILE SQLITE TỪ ACCOUNTSBACKUP GHI TRẢ LẠI ACCOUNTS
+    // RESTORE: LẤY 3 FILE GỐC TỪ ACCOUNTSBACKUP GHI TRẢ LẠI
     // ============================================================
     func restoreOriginalAccounts() {
         guard !isProcessing else { return }
@@ -550,7 +561,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Restore nguyên vẹn 3 file sqlite từ AccountsBackup...")
+        log("[*] Bắt đầu Restore nguyên vẹn 3 file từ AccountsBackup...")
         
         let backupURL = self.backupDir
         let files = self.targetFiles
@@ -590,8 +601,8 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             
             DispatchQueue.main.async {
                 if ok {
-                    self.log("✅ RESTORE HOÀN TẤT! Đã trả lại nguyên vẹn 3 file sqlite. Tắt hẳn Cài đặt và mở lại.")
-                    self.presentAlert("Restore Thành Công! Tài khoản gốc đã được khôi phục.")
+                    self.log("✅ RESTORE HOÀN TẤT! Đã trả lại nguyên vẹn 3 file từ bản backup.")
+                    self.presentAlert("Restore Thành Công! Tắt hẳn Cài đặt và mở lại.")
                 } else {
                     self.log("❌ Restore thất bại khi ghi về \(remoteAccountsDir).")
                     self.presentAlert("Restore thất bại. Kiểm tra log.")
