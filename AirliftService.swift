@@ -415,33 +415,68 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return result == 0
     }
 
-    nonisolated private func sanitizeAccountData(_ originalData: Data) -> Data {
-        guard !originalData.isEmpty else { return originalData }
+    // ============================================================
+    // SANITIZE SQLITE: LÀM SẠCH CHUỖI TÀI KHOẢN, GIỮ NGUYÊN KÍCH THƯỚC FILE
+    // ============================================================
+    nonisolated private func sanitizeAccountsSQLite(_ originalData: Data) -> Data {
+        guard originalData.count > 100 else { return originalData }
+        
         var bytes = [UInt8](originalData)
-        let markers = [
-            "appleid", "icloud", "@icloud.com", "@me.com", "@mac.com",
-            "@gmail.com", "authToken", "password", "dsPrsID", "altDSID"
+        let sensitiveTokens = [
+            "appleid",
+            "icloud",
+            "@icloud.com",
+            "@me.com",
+            "@mac.com",
+            "@gmail.com",
+            "authToken",
+            "password",
+            "dsPrsID",
+            "altDSID",
+            "personID",
+            "accountDescription"
         ]
-        for marker in markers {
-            guard let pattern = marker.data(using: .utf8), !pattern.isEmpty else { continue }
-            let patBytes = [UInt8](pattern)
-            if bytes.count < patBytes.count { continue }
-            var i = 0
-            while i <= bytes.count - patBytes.count {
-                let slice = bytes[i..<(i + patBytes.count)]
-                if String(bytes: slice, encoding: .utf8)?.lowercased() == marker.lowercased() {
-                    for j in i..<(i + patBytes.count) { bytes[j] = 0x00 }
-                    i += patBytes.count
-                } else {
-                    i += 1
-                }
+        
+        for token in sensitiveTokens {
+            if let utf8Data = token.data(using: .utf8), !utf8Data.isEmpty {
+                zeroOutPattern([UInt8](utf8Data), in: &bytes)
+            }
+            if let utf16Data = token.data(using: .utf16LittleEndian), !utf16Data.isEmpty {
+                zeroOutPattern([UInt8](utf16Data), in: &bytes)
             }
         }
+        
         return Data(bytes)
+    }
+    
+    nonisolated private func zeroOutPattern(_ pattern: [UInt8], in bytes: inout [UInt8]) {
+        guard !pattern.isEmpty, bytes.count >= pattern.count else { return }
+        var i = 0
+        while i <= bytes.count - pattern.count {
+            var matched = true
+            for j in 0..<pattern.count {
+                let b1 = bytes[i + j]
+                let b2 = pattern[j]
+                let l1 = (b1 >= 65 && b1 <= 90) ? (b1 + 32) : b1
+                let l2 = (b2 >= 65 && b2 <= 90) ? (b2 + 32) : b2
+                if l1 != l2 {
+                    matched = false
+                    break
+                }
+            }
+            if matched {
+                for j in 0..<pattern.count {
+                    bytes[i + j] = 0x00
+                }
+                i += pattern.count
+            } else {
+                i += 1
+            }
+        }
     }
 
     // ============================================================
-    // BYPASS: BACKUP 3 FILE -> LÀM SẠCH & GHI ĐÈ LẠI 3 FILE
+    // BYPASS: BACKUP 3 FILE GỐC -> LÀM SẠCH -> GHI ĐÈ LẠI 3 FILE
     // ============================================================
     func bypassICloud() {
         guard !isProcessing else { return }
@@ -452,7 +487,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Bypass (Backup 3 file & ghi đè lại 3 file)...")
+        log("[*] Bắt đầu Bypass...")
         
         let backupURL = self.backupDir
         let alreadyBackedUp = self.hasCompleteBackup
@@ -475,12 +510,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                     return
                 }
                 
-                DispatchQueue.main.async { self.log("[*] Đang backup 3 file gốc...") }
+                DispatchQueue.main.async { self.log("[*] Đang backup 3 file gốc từ \(remoteAccountsDir)...") }
                 for file in files {
                     let remotePath = "\(remoteAccountsDir)/\(file)"
                     guard let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: remotePath) else {
                         DispatchQueue.main.async {
-                            self.log("❌ Backup thất bại tại \(file), hủy Bypass.")
+                            self.log("❌ Backup thất bại tại \(file), hủy Bypass để giữ bản gốc.")
                             self.presentAlert("Backup thất bại tại \(file).")
                             self.isProcessing = false
                         }
@@ -508,15 +543,20 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 for file in files {
                     let srcURL = backupURL.appendingPathComponent(file)
                     let rawData = try Data(contentsOf: srcURL)
-                    let cleanedData = (file == "Accounts3.sqlite") ? self.sanitizeAccountData(rawData) : Data()
-                    try cleanedData.write(to: bypassDir.appendingPathComponent(file), options: .atomic)
-                    DispatchQueue.main.async { self.log("🧹 Đã xử lý \(file) (\(cleanedData.count) bytes)") }
+                    let outData: Data
+                    if file == "Accounts3.sqlite" {
+                        outData = self.sanitizeAccountsSQLite(rawData)
+                    } else {
+                        outData = Data()
+                    }
+                    try outData.write(to: bypassDir.appendingPathComponent(file), options: .atomic)
+                    DispatchQueue.main.async { self.log("🧹 Đã xử lý \(file) (\(outData.count) bytes)") }
                 }
             } catch {
                 try? fm.removeItem(at: bypassDir)
                 DispatchQueue.main.async {
-                    self.log("❌ Lỗi tạo file bypass: \(error.localizedDescription)")
-                    self.presentAlert("Lỗi tạo file bypass.")
+                    self.log("❌ Lỗi chuẩn bị file bypass: \(error.localizedDescription)")
+                    self.presentAlert("Lỗi chuẩn bị file bypass.")
                     self.isProcessing = false
                 }
                 return
@@ -529,15 +569,15 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             )
             try? fm.removeItem(at: bypassDir)
             
-            Thread.sleep(forTimeInterval: 0.5)
+            Thread.sleep(forTimeInterval: 0.4)
             
             DispatchQueue.main.async {
                 if ok {
-                    self.log("🎉 BYPASS HOÀN TẤT! Tắt hẳn app Cài đặt rồi mở lại để kiểm tra.")
-                    self.presentAlert("Bypass Hoàn Tất! Hãy tắt hẳn Cài đặt và mở lại.")
+                    self.log("🎉 Ghi đè xong! Hãy REBOOT máy để accountsd nạp lại trạng thái sạch.")
+                    self.presentAlert("Ghi đè xong! Hãy Reboot thiết bị để kiểm tra.")
                 } else {
-                    self.log("❌ Bypass thất bại khi ghi vào \(remoteAccountsDir).")
-                    self.presentAlert("Bypass thất bại. Kiểm tra log.")
+                    self.log("❌ Ghi đè thất bại vào \(remoteAccountsDir).")
+                    self.presentAlert("Ghi đè thất bại. Kiểm tra log.")
                 }
                 self.isProcessing = false
             }
@@ -545,7 +585,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // RESTORE: LẤY 3 FILE GỐC TỪ ACCOUNTSBACKUP GHI TRẢ LẠI
+    // RESTORE: TRẢ NGUYÊN VẸN 3 FILE TỪ ACCOUNTSBACKUP
     // ============================================================
     func restoreOriginalAccounts() {
         guard !isProcessing else { return }
@@ -597,12 +637,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             )
             try? fm.removeItem(at: restoreDir)
             
-            Thread.sleep(forTimeInterval: 0.5)
+            Thread.sleep(forTimeInterval: 0.4)
             
             DispatchQueue.main.async {
                 if ok {
-                    self.log("✅ RESTORE HOÀN TẤT! Đã trả lại nguyên vẹn 3 file từ bản backup.")
-                    self.presentAlert("Restore Thành Công! Tắt hẳn Cài đặt và mở lại.")
+                    self.log("✅ Restore xong! Hãy REBOOT máy để khôi phục tài khoản gốc.")
+                    self.presentAlert("Restore xong! Hãy Reboot thiết bị để kiểm tra.")
                 } else {
                     self.log("❌ Restore thất bại khi ghi về \(remoteAccountsDir).")
                     self.presentAlert("Restore thất bại. Kiểm tra log.")
