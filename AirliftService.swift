@@ -12,7 +12,7 @@ class AirliftService: ObservableObject {
     @Published var pairingFilePath: String? = nil
     @Published var lastDeviceName: String? = nil
     
-    private var localNetProbeListener: NWListener?
+    private var localNetBrowser: NWBrowser?
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
     
@@ -89,7 +89,7 @@ class AirliftService: ObservableObject {
         let ctx = Unmanaged.passUnretained(self).toOpaque()
         
         DispatchQueue.main.async {
-            self.triggerLocalNetworkPermission()
+            self.triggerLocalNetworkPrompt()
         }
         
         DispatchQueue.global(qos: .userInitiated).async {
@@ -114,8 +114,8 @@ class AirliftService: ObservableObject {
             defer { al_pairing_result_free(&result) }
             
             DispatchQueue.main.async {
-                self.localNetProbeListener?.cancel()
-                self.localNetProbeListener = nil
+                self.localNetBrowser?.cancel()
+                self.localNetBrowser = nil
                 self.isPairing = false
                 self.currentPin = nil
                 
@@ -137,41 +137,35 @@ class AirliftService: ObservableObject {
         }
     }
     
-    private func triggerLocalNetworkPermission() {
-        localNetProbeListener?.cancel()
-        localNetProbeListener = nil
+    private func triggerLocalNetworkPrompt() {
+        localNetBrowser?.cancel()
+        localNetBrowser = nil
         
-        do {
-            let params = NWParameters.tcp
-            params.includePeerToPeer = true
-            let probe = try NWListener(using: params, on: .any)
-            probe.service = NWListener.Service(
-                name: "BypassiclProbe-\(UUID().uuidString.prefix(4))",
-                type: "_remotepairing-pairable-host._tcp",
-                domain: "local."
-            )
-            probe.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    self?.log("🌐 Local Network sẵn sàng")
-                case .failed(let error):
-                    self?.log("⚠️ Local Network probe: \(error.localizedDescription)")
-                default:
-                    break
-                }
+        let browser = NWBrowser(
+            for: .bonjour(type: "_remotepairing-pairable-host._tcp", domain: "local."),
+            using: .tcp
+        )
+        browser.stateUpdateHandler = { [weak self] state in
+            if case .ready = state {
+                self?.log("🌐 Đã kích hoạt Local Network")
             }
-            localNetProbeListener = probe
-            probe.start(queue: .main)
-        } catch {
-            log("⚠️ Không thể khởi tạo probe mạng cục bộ: \(error.localizedDescription)")
+        }
+        localNetBrowser = browser
+        browser.start(queue: .main)
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self, weak browser] in
+            if self?.localNetBrowser === browser {
+                browser?.cancel()
+                self?.localNetBrowser = nil
+            }
         }
     }
     
     func stopPairing() {
         // al_pairing_run_host là blocking, hiện không có API stop.
         // Chỉ reset UI state.
-        localNetProbeListener?.cancel()
-        localNetProbeListener = nil
+        localNetBrowser?.cancel()
+        localNetBrowser = nil
         isPairing = false
         currentPin = nil
         log("⏹ Đã hủy trạng thái pairing (host vẫn có thể đang chạy)")
