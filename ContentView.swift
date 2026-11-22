@@ -16,32 +16,31 @@ struct ContentView: View {
                             .font(.system(size: 34, weight: .bold, design: .rounded))
                             .foregroundColor(.primary)
                         
-                        HStack(spacing: 8) {
+                        // Trạng thái & Nút Xoá file
+                        HStack(alignment: .top, spacing: 8) {
                             Circle()
                                 .fill(airlift.pairingFilePath != nil ? Color.green : Color.red)
                                 .frame(width: 10, height: 10)
+                                .padding(.top, 6)
                             
-                            Text(airlift.pairingFilePath != nil ? "iPhone đã sẵn sàng" : "Chưa có Pairing File")
-                                .font(.headline)
-                                .foregroundColor(airlift.pairingFilePath != nil ? .primary : .secondary)
-                            
-                            Spacer()
-                            
-                            if airlift.pairingFilePath == nil {
-                                Button(action: { isImporting = true }) {
-                                    Text("Ghép đôi")
-                                        .font(.subheadline.bold())
-                                        .foregroundColor(.white)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 8)
-                                        .background(Color.blue)
-                                        .clipShape(Capsule())
-                                        .shadow(color: Color.blue.opacity(0.3), radius: 5, x: 0, y: 3)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(airlift.pairingFilePath != nil ? "Đã có file Pairing" : "Chưa có Pairing File")
+                                    .font(.headline)
+                                    .foregroundColor(airlift.pairingFilePath != nil ? .primary : .secondary)
+                                
+                                if airlift.pairingFilePath != nil {
+                                    Button(action: { airlift.deletePairingFile() }) {
+                                        Text("Xoá File")
+                                            .font(.caption.bold())
+                                            .foregroundColor(.red)
+                                            .padding(.vertical, 2)
+                                    }
                                 }
                             }
+                            Spacer()
                         }
                         
-                        // Pair Button
+                        // Nút Pair on Device
                         Button(action: { airlift.startPairingOnDevice() }) {
                             Text("Pair on Device (iOS 27+)")
                                 .font(.subheadline.bold())
@@ -49,6 +48,18 @@ struct ContentView: View {
                                 .padding()
                                 .background(Color.orange.opacity(0.15))
                                 .foregroundColor(.orange)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        .disabled(airlift.isPairing || airlift.isProcessing)
+                        
+                        // NÚT IMPORT PAIRING FILE (Luôn hiển thị)
+                        Button(action: { isImporting = true }) {
+                            Text("Import Pairing File (iOS < 27)")
+                                .font(.subheadline.bold())
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                                .background(Color.blue.opacity(0.15))
+                                .foregroundColor(.blue)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .disabled(airlift.isPairing || airlift.isProcessing)
@@ -159,7 +170,7 @@ struct ContentView: View {
             .onAppear { _ = airlift.connect() }
             .fileImporter(
                 isPresented: $isImporting,
-                allowedContentTypes: [.data],
+                allowedContentTypes: [.data, .item],
                 allowsMultipleSelection: false
             ) { result in
                 if case .success(let urls) = result, let url = urls.first {
