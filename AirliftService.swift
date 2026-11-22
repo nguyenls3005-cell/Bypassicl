@@ -98,7 +98,7 @@ class AirliftService: ObservableObject {
         }
     }
     
-    // MARK: - Pair on Device
+    // MARK: - Pair on Device (StikPair flow: Local Network + FFI host + Keep-Alive)
     func startPairingOnDevice() {
         guard !isPairing else { return }
         
@@ -227,7 +227,7 @@ class AirliftService: ObservableObject {
         log("⏹ Đã hủy trạng thái pairing")
     }
     
-    // MARK: - Connect
+    // MARK: - Connect (dùng pairing đã có)
     func connect() -> Bool {
         log("[*] Kiểm tra pairing...")
         
@@ -255,7 +255,7 @@ class AirliftService: ObservableObject {
         return true
     }
     
-    // MARK: - Grappa
+    // MARK: - Grappa (giữ nguyên)
     private func generateGrappaToken() -> Data? {
         let maxLen = 1024
         var buffer = [UInt8](repeating: 0, count: maxLen)
