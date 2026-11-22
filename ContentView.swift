@@ -162,9 +162,7 @@ struct ContentView: View {
             }
             .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
             .navigationBarHidden(true)
-            .onAppear {
-                _ = airlift.connect() 
-            }
+            .onAppear { _ = airlift.connect() }
             .fileImporter(
                 isPresented: $isImporting,
                 allowedContentTypes: [.data],
@@ -178,19 +176,6 @@ struct ContentView: View {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text(airlift.alertMessage)
-            }
-            // Overlay Loading khi chạy
-            .overlay {
-                if airlift.isProcessing {
-                    ZStack {
-                        Color.black.opacity(0.2).ignoresSafeArea()
-                        ProgressView("Đang xử lý...")
-                            .padding()
-                            .background(.ultraThinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .shadow(radius: 10)
-                    }
-                }
             }
         }
     }
