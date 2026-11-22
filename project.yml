@@ -10,6 +10,7 @@ targets:
     sources:
       - path: .
         excludes:
+          - ".git"
           - ".github"
           - "build"
           - "Payload"
@@ -21,6 +22,7 @@ targets:
       base:
         SWIFT_VERSION: 5.0
         INFOPLIST_FILE: Info.plist
+        CODE_SIGN_ENTITLEMENTS: Bypassicl.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.bypass.icl.Bypassicl
         SWIFT_OBJC_BRIDGING_HEADER: "Bypassicl-Bridging-Header.h"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Frameworks"
