@@ -3,93 +3,172 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @ObservedObject var airlift = AirliftService.shared
+    @State private var isVPNLocalOn = false
     @State private var isImporting = false
     
     var body: some View {
         NavigationView {
-            VStack(spacing: 16) {
-                
-                // Vùng hiển thị PIN (Chỉ hiện khi đang có mã)
-                if let pin = airlift.currentPin {
-                    VStack(spacing: 4) {
-                        Text("PAIRING CODE")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text(pin)
-                            .font(.system(size: 42, weight: .bold, design: .monospaced))
-                            .foregroundColor(.red)
-                            .tracking(8)
-                    }
-                    .padding(.vertical, 10)
-                }
-                
-                // Khung Log Console
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(airlift.logs)
-                            .font(.system(.footnote, design: .monospaced))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    
+                    // 1. KHỐI TRẠNG THÁI (HEADER)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("BypassLS")
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
                             .foregroundColor(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .id("LogBottom")
-                    }
-                    .background(Color(UIColor.secondarySystemBackground))
-                    .cornerRadius(8)
-                    .onChange(of: airlift.logs) { _ in
-                        withAnimation {
-                            proxy.scrollTo("LogBottom", anchor: .bottom)
-                        }
-                    }
-                }
-                .frame(maxHeight: .infinity)
-                
-                // Khối Buttons
-                VStack(spacing: 12) {
-                    
-                    Button(action: { isImporting = true }) {
-                        Text("Import Pairing File")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    
-                    Button(action: { airlift.startPairingOnDevice() }) {
-                        Text("Pair on Device")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
-                    
-                    Button(action: {
-                        if airlift.connect() {
-                            airlift.alertMessage = "Kết nối Airlift thành công!"
-                            airlift.showAlert = true
-                        }
-                    }) {
-                        Text("Connect Airlift")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    
-                    HStack(spacing: 12) {
-                        Button(action: { airlift.restoreOriginalAccounts() }) {
-                            Text("Restore Gốc")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
                         
-                        Button(action: { airlift.bypassICloud() }) {
-                            Text("Bypass iCloud")
-                                .frame(maxWidth: .infinity)
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(airlift.pairingFilePath != nil ? Color.green : Color.red)
+                                .frame(width: 10, height: 10)
+                            
+                            Text(airlift.pairingFilePath != nil ? "iPhone đã sẵn sàng" : "Chưa có Pairing File")
+                                .font(.headline)
+                                .foregroundColor(airlift.pairingFilePath != nil ? .primary : .secondary)
+                            
+                            Spacer()
+                            
+                            if airlift.pairingFilePath == nil {
+                                Button(action: { isImporting = true }) {
+                                    Text("Ghép đôi")
+                                        .font(.subheadline.bold())
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(Color.blue)
+                                        .cornerRadius(8)
+                                }
+                            }
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
+                        
+                        // Nút Pair on Device (Dành cho iOS 27)
+                        Button(action: {
+                            airlift.log("📡 Bắt đầu Pair on Device...")
+                            airlift.startPairingOnDevice()
+                        }) {
+                            Text("Pair on Device (iOS 27+)")
+                                .font(.subheadline.bold())
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                                .background(Color.orange.opacity(0.15))
+                                .foregroundColor(.orange)
+                                .cornerRadius(10)
+                        }
+                        .disabled(airlift.isPairing || airlift.isProcessing)
+                        
+                        // VPN Local Toggle
+                        Toggle(isOn: $isVPNLocalOn) {
+                            VStack(alignment: .leading) {
+                                Text("VPN local")
+                                    .font(.subheadline.bold())
+                                Text("Peer 10.7.0.1")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .toggleStyle(SwitchToggleStyle(tint: .orange))
+                        .padding(.top, 4)
+                        
+                        if airlift.isProcessing && !isVPNLocalOn {
+                            Text("⚠️ Vui lòng bật VPN Local để quá trình chạy ổn định!")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+                    }
+                    .padding()
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                    .cornerRadius(16)
+                    
+                    // 2. CHỌN CHỨC NĂNG
+                    Text("Chọn chức năng")
+                        .font(.headline)
+                        .padding(.horizontal, 4)
+                    
+                    HStack {
+                        Text("Bypass Apple ID")
+                            .font(.body)
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.orange)
+                    }
+                    .padding()
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
+                    .cornerRadius(12)
+                    
+                    // 3. NÚT HÀNH ĐỘNG (Màu cam trong suốt)
+                    VStack(spacing: 12) {
+                        Button(action: {
+                            airlift.log("🔥 Bắt đầu chạy Bypass Apple ID...")
+                            airlift.bypassICloud()
+                        }) {
+                            Text("Bắt đầu chạy")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                                .background(Color.orange.opacity(0.7))
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                        }
+                        .disabled(airlift.isProcessing || airlift.isPairing)
+                        
+                        Button(action: {
+                            airlift.log("🔄 Bắt đầu Restore toàn bộ...")
+                            airlift.restoreOriginalAccounts()
+                        }) {
+                            Text("Khôi phục toàn bộ")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                                .background(Color.orange.opacity(0.7))
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                        }
+                        .disabled(airlift.isProcessing || airlift.isPairing)
+                    }
+                    
+                    // 4. LOG (Tiến trình)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Tiến trình")
+                                .font(.headline)
+                            Spacer()
+                            if airlift.isProcessing {
+                                Text("RUNNING")
+                                    .font(.caption.bold())
+                                    .foregroundColor(.orange)
+                            } else {
+                                Text("READY")
+                                    .font(.caption.bold())
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                Text(airlift.logs)
+                                    .font(.system(size: 13, design: .monospaced))
+                                    .foregroundColor(.primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                                    .id("LogBottom")
+                            }
+                            .frame(height: 200)
+                            .background(Color(UIColor.secondarySystemGroupedBackground))
+                            .cornerRadius(12)
+                            .onChange(of: airlift.logs) { _ in
+                                withAnimation {
+                                    proxy.scrollTo("LogBottom", anchor: .bottom)
+                                }
+                            }
+                        }
                     }
                 }
-                .disabled(airlift.isProcessing || airlift.isPairing) // Khóa nút khi đang chạy
+                .padding()
             }
-            .padding()
-            .navigationTitle("LSTool")
-            .navigationBarTitleDisplayMode(.inline)
+            .background(Color(UIColor.systemGroupedBackground))
+            .navigationBarHidden(true)
             .fileImporter(
                 isPresented: $isImporting,
                 allowedContentTypes: [.data],
@@ -99,21 +178,10 @@ struct ContentView: View {
                     airlift.importPairingFile(from: url)
                 }
             }
-            // Popup thông báo
             .alert("Thông Báo", isPresented: $airlift.showAlert) {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text(airlift.alertMessage)
-            }
-            // Vòng xoay loading khi đang xử lý
-            .overlay {
-                if airlift.isProcessing {
-                    ProgressView("Đang xử lý...")
-                        .padding()
-                        .background(Color(UIColor.secondarySystemBackground))
-                        .cornerRadius(8)
-                        .shadow(radius: 5)
-                }
             }
         }
     }
