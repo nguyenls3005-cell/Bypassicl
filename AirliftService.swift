@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Infinite Retry Loop)
+// AirliftService.swift — Bypassicl (Full Fixed)
 // ============================================================
 
 import Foundation
@@ -53,12 +53,23 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // FFI CALLBACKS
+    // FFI CALLBACKS (Đã fix lỗi ký tự lạ ANSI)
     // ============================================================
     private static let logCallback: ALLogCallback = { ctx, msg in
         guard let msg = msg, let ctx = ctx else { return }
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
-        DispatchQueue.main.async { service.log("[Airlift] \(String(cString: msg))") }
+        
+        // Đọc C-string và lọc bỏ mã màu ANSI
+        if let rawString = String(validatingUTF8: msg) {
+            let cleanString = rawString.replacingOccurrences(
+                of: "\u{001B}\\[[0-9;]*[a-zA-Z]",
+                with: "",
+                options: .regularExpression
+            )
+            DispatchQueue.main.async {
+                service.log("[Airlift] \(cleanString)")
+            }
+        }
     }
     
     private static let pinCallback: ALPairPinCb = { pin, ctx in
@@ -91,7 +102,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // BACKGROUND TASK & AUDIO KEEP ALIVE
+    // BACKGROUND TASK & AUDIO
     // ============================================================
     nonisolated private func registerBackgroundTask() {
         let taskId = (Bundle.main.bundleIdentifier ?? "com.bypassicl.app") + ".pairing"
@@ -140,7 +151,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // ENTRY POINT
+    // PAIRING ENTRY POINT
     // ============================================================
     func startPairingOnDevice() {
         guard !isPairing else { return }
@@ -148,10 +159,9 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         self.isPairing = true
         self.currentPin = nil
         self.pairingStarted = false
-        self.log("[*] Starting Pair on Device (Infinite Mode)...")
+        self.log("[*] Starting Pair on Device...")
         
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        
         self.startKeepAliveAudio()
         
         Task.detached { [weak self] in
@@ -170,13 +180,9 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         request.strategy = .queue
 
         do { try BGTaskScheduler.shared.submit(request) } catch {}
-        
         self.runPairing(task: nil)
     }
     
-    // ============================================================
-    // INFINITE RETRY LOOP (CHỐNG XOÁ PAIRING)
-    // ============================================================
     private func runPairing(task: BGContinuedProcessingTask?) {
         guard !pairingStarted else { return }
         pairingStarted = true
@@ -188,7 +194,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         task?.expirationHandler = { [weak self] in
             guard let self = self else { return }
             Task { @MainActor in
-                self.isPairing = false // Dừng vòng lặp
+                self.isPairing = false
                 self.finishTask(success: false)
                 self.log("❌ Background time expired.")
             }
@@ -202,9 +208,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             var finalPath: String? = nil
             var finalName: String? = nil
 
-            // VÒNG LẶP VÔ HẠN: Chạy lại host ngay khi nó return
             while true {
-                // Check xem user có bấm Hủy bên Main Thread không
                 var shouldContinue = false
                 DispatchQueue.main.sync { shouldContinue = self.isPairing }
                 if !shouldContinue { break }
@@ -216,30 +220,25 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 )
 
                 if code == 0 {
-                    // THÀNH CÔNG -> Lấy data và thoát vòng lặp
                     isSuccess = true
                     if let p = result.pairing_file_path { finalPath = String(cString: p) }
                     if let n = result.device_name { finalName = String(cString: n) }
                     al_pairing_result_free(&result)
                     break
                 } else {
-                    // THẤT BẠI / NGẮT KẾT NỐI -> Xóa data cũ, chờ 0.5s rồi chạy lại
-                    let err = result.error != nil ? String(cString: result.error!) : "unknown"
                     al_pairing_result_free(&result)
-                    
                     DispatchQueue.main.async {
-                        self.log("🔄 Kết nối ngắt (\(err)). Đang khởi động lại Host...")
-                        self.currentPin = nil // Xóa PIN cũ
+                        self.currentPin = nil // Xóa PIN cũ khi retry
+                        self.log("🔄 Ngắt kết nối. Đang khởi động lại Host...")
                     }
-                    
                     Thread.sleep(forTimeInterval: 0.5)
                 }
             }
 
-            // DỌN DẸP SAU KHI XONG
             DispatchQueue.main.async {
                 self.pairingStarted = false
                 self.isPairing = false
+                self.currentPin = nil // FIX: Xóa PIN khi kết thúc thành công
                 self.stopAdvertising()
                 self.stopKeepAliveAudio()
 
@@ -264,9 +263,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         bgTask = nil
     }
     
-    // ============================================================
-    // ADVERTISING
-    // ============================================================
     private func startAdvertising(serviceID: String, port: Int32, txt: [String: Data]) {
         stopAdvertising()
         let service = NetService(domain: "", type: "_remotepairing-pairable-host._tcp.", name: serviceID, port: port)
@@ -305,7 +301,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // CÁC HÀM CŨ CỦA BYPASSICL (Giữ nguyên)
+    // FFI HELPER FUNCTIONS (Đã FIX GỌI CONNECT)
     // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
@@ -403,8 +399,17 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return true
     }
 
+    // ============================================================
+    // FIX: GỌI CONNECT() TRƯỚC KHI BYPASS/RESTORE
+    // ============================================================
     func bypassICloud() {
         log("[*] Starting Bypass...")
+        // Bắt buộc phải có kết nối (pairing file)
+        guard connect() else {
+            log("❌ Bypass failed: Không tìm thấy Pairing file.")
+            return
+        }
+        
         guard autoBackupAccountsIfNeeded() else {
             log("❌ Bypass cancelled — backup failed")
             return
@@ -429,6 +434,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
 
     func restoreOriginalAccounts() {
         log("[*] Restoring original accounts...")
+        // Bắt buộc phải có kết nối (pairing file)
+        guard connect() else {
+            log("❌ Restore failed: Không tìm thấy Pairing file.")
+            return
+        }
+        
         let fm = FileManager.default
         let stagingDir = FileManager.default.temporaryDirectory.appendingPathComponent("restore_\(UUID().uuidString)")
         do {
