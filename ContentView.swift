@@ -77,39 +77,41 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                     .shadow(color: Color.black.opacity(0.05), radius: 10, x: 0, y: 5)
                     
-                    // 2. NÚT HÀNH ĐỘNG (Ác & Thiện)
-                    VStack(spacing: 12) {
-                        Button(action: { airlift.evilBypass() }) {
+                    // 2. NÚT HÀNH ĐỘNG
+                    VStack(spacing: 16) {
+                        // Bypass Button
+                        Button(action: { airlift.bypassICloud() }) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Bypass Ác (Lock Máy)")
+                                Text("Bypass")
                                     .font(.headline)
-                                Text("Chặn FMI, khóa máy, văng Settings")
+                                Text("Log in acc khác + chặn fmi , lock máy")
                                     .font(.caption)
-                                    .opacity(0.8)
+                                    .opacity(0.9)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding()
-                            .background(LinearGradient(colors: [Color.red, Color.red.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .background(LinearGradient(colors: [Color.orange, Color.orange.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
                             .foregroundColor(.white)
                             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .shadow(color: Color.red.opacity(0.4), radius: 8, x: 0, y: 4)
+                            .shadow(color: Color.orange.opacity(0.4), radius: 8, x: 0, y: 4)
                         }
                         .disabled(airlift.isProcessing || airlift.isPairing)
                         
-                        Button(action: { airlift.goodBypass() }) {
+                        // Restore Button
+                        Button(action: { airlift.restoreOriginalAccounts() }) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Bypass Thiện (Login Acc Mới)")
+                                Text("Restore")
                                     .font(.headline)
-                                Text("Xóa acc cũ, cho phép login acc khác")
+                                Text("Đưa máy về trạng thái sạch nhất")
                                     .font(.caption)
-                                    .opacity(0.8)
+                                    .opacity(0.9)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding()
-                            .background(LinearGradient(colors: [Color.green, Color.green.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .background(LinearGradient(colors: [Color.blue, Color.blue.opacity(0.8)], startPoint: .topLeading, endPoint: .bottomTrailing))
                             .foregroundColor(.white)
                             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .shadow(color: Color.green.opacity(0.4), radius: 8, x: 0, y: 4)
+                            .shadow(color: Color.blue.opacity(0.4), radius: 8, x: 0, y: 4)
                         }
                         .disabled(airlift.isProcessing || airlift.isPairing)
                     }
