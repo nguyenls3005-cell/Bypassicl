@@ -61,10 +61,10 @@ struct ContentView: View {
                 .cornerRadius(10)
                 .padding(.horizontal)
                 
-                // MARK: - PIN hiển thị khi đang pair
+                // MARK: - PIN displayed when pairing
                 if let pin = airlift.currentPin {
                     VStack(spacing: 6) {
-                        Text("Enter this pin on your iPhone")
+                        Text("Enter this PIN on your iPhone")
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(pin)
@@ -74,12 +74,12 @@ struct ContentView: View {
                     .padding(.vertical, 8)
                 }
                 
-                // MARK: - Nút chức năng
+                // MARK: - Action Buttons
                 VStack(spacing: 10) {
                     
                     // 1. Import Pairing File
                     Button {
-                        airlift.logs += "[*] Open Document Picker...\n"
+                        airlift.logs += "[*] Opening Document Picker...\n"
                         showImporter = true
                     } label: {
                         Label("Import Pairing File", systemImage: "doc.badge.plus")
@@ -94,7 +94,7 @@ struct ContentView: View {
                         airlift.startPairingOnDevice()
                     } label: {
                         Label(
-                            airlift.isPairing ? " Pairing... (Wait PIN)" : "Pair on Device (iOS 27)",
+                            airlift.isPairing ? "Pairing... (Waiting for PIN)" : "Pair on Device (iOS 27)",
                             systemImage: airlift.isPairing ? "antenna.radiowaves.left.and.right" : "link"
                         )
                         .frame(maxWidth: .infinity)
@@ -103,7 +103,7 @@ struct ContentView: View {
                     .tint(airlift.isPairing ? .orange : .cyan)
                     .disabled(isProcessing || airlift.isPairing)
                     
-                    // 3. Kết nối
+                    // 3. Connect
                     Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
@@ -115,7 +115,7 @@ struct ContentView: View {
                         }
                     } label: {
                         Label(
-                            isConnected ? "Đã kết nối" : "Kết nối Airlift",
+                            isConnected ? "Connected" : "Connect Airlift",
                             systemImage: isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle"
                         )
                         .frame(maxWidth: .infinity)
@@ -124,7 +124,7 @@ struct ContentView: View {
                     .tint(isConnected ? .green : .blue)
                     .disabled(isProcessing || airlift.isPairing)
                     
-                    // 4. Restore Tài Khoản Gốc (thay cho nút Chỉ Backup)
+                    // 4. Restore Original Accounts
                     Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
@@ -132,14 +132,14 @@ struct ContentView: View {
                             DispatchQueue.main.async { isProcessing = false }
                         }
                     } label: {
-                        Label("Restore to original", systemImage: "arrow.counterclockwise.circle.fill")
+                        Label("Restore to Original", systemImage: "arrow.counterclockwise.circle.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
                     .disabled(isProcessing || !isConnected || airlift.isPairing)
                     
-                    // 5. Bypass (auto backup at first and overwrite)
+                    // 5. Bypass iCloud
                     Button {
                         isProcessing = true
                         DispatchQueue.global(qos: .userInitiated).async {
@@ -168,7 +168,7 @@ struct ContentView: View {
                     },
                     onCancel: {
                         showImporter = false
-                        airlift.logs += "⏹ Cancle chose file\n"
+                        airlift.logs += "⏹ File selection cancelled\n"
                     }
                 )
             }
