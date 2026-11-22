@@ -2,7 +2,7 @@ name: Bypassicl
 options:
   bundleIdPrefix: com.bypass.icl
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "26"
 targets:
   Bypassicl:
     type: application
