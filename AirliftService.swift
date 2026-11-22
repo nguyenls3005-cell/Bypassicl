@@ -1,5 +1,5 @@
 // ============================================================
-// AirliftService.swift — Bypassicl (Good & Evil Bypass)
+// AirliftService.swift — Bypassicl (Final Version)
 // ============================================================
 
 import Foundation
@@ -389,17 +389,17 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // BYPASS ÁC: CHẶN FMI, KHÓA MÁY
+    // BYPASS: LOGIN ACC KHÁC + CHẶN FMI, LOCK MÁY
     // ============================================================
-    func evilBypass() {
+    func bypassICloud() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
-            log("❌ Bypass Ác failed: Missing Pairing File.")
+            log("❌ Bypass failed: Missing Pairing File.")
             return
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Bypass Ác (Khóa Máy, Chặn FMI)...")
+        log("[*] Bắt đầu Bypass (Xóa Acc, Chặn FMI)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -417,21 +417,22 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 }
             }
             
-            // 2. Tạo file rác 0xFF 1MB (Phá nát DB)
-            let garbageDir = fm.temporaryDirectory.appendingPathComponent("garbage_\(UUID().uuidString)")
-            try? fm.createDirectory(at: garbageDir, withIntermediateDirectories: true)
-            let garbageData = Data(repeating: 0xFF, count: 1024 * 1024)
-            for file in self.targetFiles {
-                try? garbageData.write(to: garbageDir.appendingPathComponent(file), options: .atomic)
-            }
+            // 2. Tạo DB sạch (Xóa acc cũ)
+            let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_\(UUID().uuidString)")
+            try? fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
             
-            // 3. Ghi đè SQLite
-            let success = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: garbageDir.path, targetDir: self.accountsDir)
+            let emptyDB = self.createEmptySQLite()
+            let emptyData = Data()
             
-            // 4. Xóa Plist
+            try? emptyDB.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite"), options: .atomic)
+            try? emptyData.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-wal"), options: .atomic)
+            try? emptyData.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-shm"), options: .atomic)
+            
+            let success = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: cleanDir.path, targetDir: self.accountsDir)
+            
+            // 3. Xóa plist (Chặn FMI, Lock máy)
             let plistEmptyDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
             try? fm.createDirectory(at: plistEmptyDir, withIntermediateDirectories: true)
-            let emptyData = Data()
             for file in self.plistFiles {
                 try? emptyData.write(to: plistEmptyDir.appendingPathComponent(file), options: .atomic)
             }
@@ -441,33 +442,33 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             
             DispatchQueue.main.async {
                 if success {
-                    self.log("🎉 BYPASS ÁC THÀNH CÔNG! Máy đã bị khóa (Block FMI).")
-                    self.alertMessage = "Bypass Ác Thành Công! Máy đã bị khóa, chặn FMI. Vui lòng vuốt tắt app Cài đặt."
+                    self.log("🎉 BYPASS THÀNH CÔNG! Hãy vuốt tắt app Cài đặt (Settings) và mở lại.")
+                    self.alertMessage = "Bypass Thành Công! Đã xóa acc cũ, chặn FMI. Vui lòng tắt app Cài đặt và mở lại."
                 } else {
-                    self.log("❌ Bypass Ác thất bại.")
-                    self.alertMessage = "Bypass Ác thất bại."
+                    self.log("❌ Bypass thất bại.")
+                    self.alertMessage = "Bypass thất bại."
                 }
                 self.isProcessing = false
                 self.showAlert = true
             }
             
-            try? fm.removeItem(at: garbageDir)
+            try? fm.removeItem(at: cleanDir)
             try? fm.removeItem(at: plistEmptyDir)
         }
     }
 
     // ============================================================
-    // BYPASS THIỆN: LOGIN ACC KHÁC
+    // RESTORE: ĐƯA MÁY VỀ TRẠNG THÁI SẠCH NHẤT
     // ============================================================
-    func goodBypass() {
+    func restoreOriginalAccounts() {
         guard !isProcessing else { return }
         guard connect(), let pairingPath = pairingFilePath else {
-            log("❌ Bypass Thiện failed: Missing Pairing File.")
+            log("❌ Restore failed: Missing Pairing File.")
             return
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Bypass Thiện (Xóa Acc, Cho phép Login)...")
+        log("[*] Bắt đầu Restore (Đưa máy về trạng thái sạch)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
@@ -479,14 +480,12 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_\(UUID().uuidString)")
             try? fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
             
-            // Ghi file SQLite rỗng
             try? emptyDB.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite"), options: .atomic)
             try? emptyData.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-wal"), options: .atomic)
             try? emptyData.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-shm"), options: .atomic)
             
             let success = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: cleanDir.path, targetDir: self.accountsDir)
             
-            // Xóa plist
             let plistEmptyDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
             try? fm.createDirectory(at: plistEmptyDir, withIntermediateDirectories: true)
             for file in self.plistFiles {
@@ -498,11 +497,11 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             
             DispatchQueue.main.async {
                 if success {
-                    self.log("✅ BYPASS THIỆN THÀNH CÔNG! Đã xóa Acc cũ, cho phép login acc khác.")
-                    self.alertMessage = "Bypass Thiện Thành Công! Hãy vuốt tắt app Cài đặt (Settings) và mở lại để đăng nhập acc mới."
+                    self.log("✅ RESTORE HOÀN TẤT! Máy đã về trạng thái sạch nhất.")
+                    self.alertMessage = "Restore Thành Công! Máy đã sạch. Vui lòng tắt app Cài đặt và mở lại."
                 } else {
-                    self.log("❌ Bypass Thiện thất bại.")
-                    self.alertMessage = "Bypass Thiện thất bại."
+                    self.log("❌ Restore thất bại.")
+                    self.alertMessage = "Restore thất bại."
                 }
                 self.isProcessing = false
                 self.showAlert = true
