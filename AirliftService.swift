@@ -316,7 +316,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
 
     // ============================================================
-    // CONNECT & IMPORT
+    // CONNECT / IMPORT / DELETE
     // ============================================================
     func connect() -> Bool {
         if pairingFilePath == nil || !FileManager.default.fileExists(atPath: pairingFilePath!) {
@@ -345,6 +345,22 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         } catch { log("❌ Import failed: \(error.localizedDescription)") }
     }
 
+    // Hàm xoá file pairing
+    func deletePairingFile() {
+        guard let path = pairingFilePath else { return }
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            self.pairingFilePath = nil
+            self.log("🗑 Đã xoá Pairing File.")
+            self.alertMessage = "Đã xoá Pairing File thành công!"
+            self.showAlert = true
+        } catch {
+            self.log("❌ Lỗi xoá file: \(error.localizedDescription)")
+            self.alertMessage = "Lỗi xoá file: \(error.localizedDescription)"
+            self.showAlert = true
+        }
+    }
+
     // ============================================================
     // FFI HELPERS
     // ============================================================
@@ -371,21 +387,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         let result = al_exploit_write_dir(pairingPath, sourceDir, targetDir, AirliftService.logCallback, ctx, &outError)
         defer { if let e = outError { al_string_free(e) } }
         return result == 0
-    }
-
-    private func createEmptySQLite() -> Data {
-        var emptyDB = Data(count: 4096)
-        let header: [UInt8] = [
-            0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
-            0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x2E, 0x7A, 0x00
-        ]
-        emptyDB.replaceSubrange(0..<100, with: header)
-        return emptyDB
     }
 
     // ============================================================
@@ -417,22 +418,20 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 }
             }
             
-            // 2. Tạo DB sạch (Xóa acc cũ)
-            let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_\(UUID().uuidString)")
-            try? fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
+            // 2. Phá DB (0xFF)
+            let garbageDir = fm.temporaryDirectory.appendingPathComponent("garbage_\(UUID().uuidString)")
+            try? fm.createDirectory(at: garbageDir, withIntermediateDirectories: true)
+            let garbageData = Data(repeating: 0xFF, count: 1024 * 1024)
+            for file in self.targetFiles {
+                try? garbageData.write(to: garbageDir.appendingPathComponent(file), options: .atomic)
+            }
             
-            let emptyDB = self.createEmptySQLite()
-            let emptyData = Data()
+            let success = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: garbageDir.path, targetDir: self.accountsDir)
             
-            try? emptyDB.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite"), options: .atomic)
-            try? emptyData.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-wal"), options: .atomic)
-            try? emptyData.write(to: cleanDir.appendingPathComponent("Accounts3.sqlite-shm"), options: .atomic)
-            
-            let success = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: cleanDir.path, targetDir: self.accountsDir)
-            
-            // 3. Xóa plist (Chặn FMI, Lock máy)
+            // 3. Xóa plist
             let plistEmptyDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
             try? fm.createDirectory(at: plistEmptyDir, withIntermediateDirectories: true)
+            let emptyData = Data()
             for file in self.plistFiles {
                 try? emptyData.write(to: plistEmptyDir.appendingPathComponent(file), options: .atomic)
             }
@@ -452,7 +451,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 self.showAlert = true
             }
             
-            try? fm.removeItem(at: cleanDir)
+            try? fm.removeItem(at: garbageDir)
             try? fm.removeItem(at: plistEmptyDir)
         }
     }
@@ -474,7 +473,18 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             guard let self = self else { return }
             let fm = FileManager.default
             
-            let emptyDB = self.createEmptySQLite()
+            var emptyDB = Data(count: 4096)
+            let header: [UInt8] = [
+                0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
+                0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x2E, 0x7A, 0x00
+            ]
+            emptyDB.replaceSubrange(0..<100, with: header)
+            
             let emptyData = Data()
             
             let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_\(UUID().uuidString)")
