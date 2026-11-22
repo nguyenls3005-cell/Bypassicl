@@ -1,29 +1,27 @@
+// ============================================================
+// AirliftService.swift — Bypassicl
+// Continuous Bonjour pair-on-device advertisement
+//
+// REQUIRED Info.plist keys:
+//   <key>NSBonjourServices</key>
+//   <array>
+//       <string>_remotepairing-pairable-host._tcp</string>
+//       <string>_remotepairing._tcp</string>
+//   </array>
+//   <key>NSLocalNetworkUsageDescription</key>
+//   <string>Bypassicl needs local network access to broadcast a pairing host.</string>
+//   <key>UIBackgroundModes</key>
+//   <array>
+//       <string>audio</string>
+//   </array>
+// ============================================================
+
 import Foundation
 import Combine
 import UniformTypeIdentifiers
 import Network
 import AVFoundation
 import UIKit
-
-// ============================================================
-// INFO.PLIST REQUIREMENTS — add these keys or iOS will silently
-// block all Bonjour advertising + browsing:
-//
-//   <key>NSBonjourServices</key>
-//   <array>
-//       <string>_remotepairing-pairable-host._tcp</string>
-//       <string>_remotepairing._tcp</string>
-//   </array>
-//
-//   <key>NSLocalNetworkUsageDescription</key>
-//   <string>Bypassicl needs local network access to broadcast a pairing host
-//   for on-device pairing via Developer settings.</string>
-//
-//   <key>UIBackgroundModes</key>
-//   <array>
-//       <string>audio</string>
-//   </array>
-// ============================================================
 
 class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     static let shared = AirliftService()
@@ -114,18 +112,17 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         let sid = serviceId != nil ? String(cString: serviceId!) : "Bypassicl"
         service.log("📡 Host ready: \(sid) : \(port)")
         
-        // Fire up the continuous NetService publisher on the FFI's service ID/port
+        // FFI exposes port as UInt16; NetService wants Int32.
+        let netPort = Int32(port)
+        
         DispatchQueue.main.async {
-            service.startContinuousBonjourAdvertisement(serviceId: sid, port: port)
+            service.startContinuousBonjourAdvertisement(serviceId: sid, port: netPort)
         }
     }
     
     // ============================================================
     // CONTINUOUS BONJOUR ADVERTISER
     // ============================================================
-    
-    /// Pure DNS-SD publisher — does NOT own the socket, just advertises
-    /// the FFI host's service ID + port so the entry never disappears.
     func startContinuousBonjourAdvertisement(serviceId: String, port: Int32) {
         stopBonjourPublisherOnly()
         
@@ -248,7 +245,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // IMPORT PAIRING FILE (unchanged)
+    // IMPORT PAIRING FILE
     // ============================================================
     func importPairingFile(from url: URL) {
         let accessing = url.startAccessingSecurityScopedResource()
@@ -278,14 +275,14 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // PAIR ON DEVICE (continuous Bonjour)
+    // PAIR ON DEVICE
     // ============================================================
     func startPairingOnDevice() {
         guard !isPairing else { return }
         
-        isPairing        = true
-        currentPin       = nil
-        userCancelled    = false
+        isPairing         = true
+        currentPin        = nil
+        userCancelled     = false
         pairingHostActive = true
         log("[*] Starting Pair on Device...")
         log("👉 Grant Local Network, then open Settings → Privacy & Security → Developer Mode")
@@ -323,8 +320,8 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 self.stopContinuousBonjourAdvertisement()
                 self.endBackgroundTask()
                 self.stopPairingServices()
-                self.isPairing    = false
-                self.currentPin   = nil
+                self.isPairing   = false
+                self.currentPin  = nil
                 
                 if code == 0 && !self.userCancelled {
                     if let path = result.pairing_file_path {
@@ -344,8 +341,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
     }
     
-    /// Keeps an NWBrowser alive — this holds the Local Network permission
-    /// and acts as a secondary liveness check alongside NetService.
+    /// NWBrowser that holds the Local Network permission and self-heals.
     private func triggerLocalNetworkPrompt() {
         localNetBrowser?.cancel()
         localNetBrowser = nil
@@ -364,8 +360,6 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                     guard let self = self, self.pairingHostActive else { return }
                     self.triggerLocalNetworkPrompt()
                 }
-            case .cancelled:
-                break
             default:
                 break
             }
@@ -381,7 +375,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     }
     
     // ============================================================
-    // AUDIO KEEP-ALIVE (unchanged)
+    // AUDIO KEEP-ALIVE
     // ============================================================
     private func startKeepAliveAudio() {
         do {
@@ -429,14 +423,13 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         stopContinuousBonjourAdvertisement()
         stopPairingServices()
         endBackgroundTask()
-        isPairing   = false
-        currentPin  = nil
+        isPairing  = false
+        currentPin = nil
         log("⏹ Pairing cancelled")
     }
     
     // ============================================================
-    // CONNECT / GRAPPA / FFI / BACKUP / BYPASS / RESTORE
-    // (unchanged from your original file)
+    // CONNECT
     // ============================================================
     func connect() -> Bool {
         log("[*] Checking pairing...")
@@ -457,6 +450,9 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return true
     }
     
+    // ============================================================
+    // GRAPPA
+    // ============================================================
     private func generateGrappaToken() -> Data? {
         let maxLen = 1024
         var buffer = [UInt8](repeating: 0, count: maxLen)
@@ -468,19 +464,25 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return nil
     }
     
+    // ============================================================
+    // FFI HELPERS
+    // ============================================================
     private func ffi_read_file(_ iosPath: String) -> Data? {
         guard let pairing = pairingFilePath else { return nil }
         var outData: UnsafeMutablePointer<UInt8>? = nil
         var outLen: size_t = 0
         var outError: UnsafeMutablePointer<CChar>? = nil
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let result = al_exploit_read_file(pairing, iosPath, AirliftService.logCallback, ctx, &outData, &outLen, &outError)
+        let result = al_exploit_read_file(
+            pairing, iosPath, AirliftService.logCallback, ctx,
+            &outData, &outLen, &outError
+        )
         defer {
             if let e = outError { al_string_free(e) }
             if let d = outData { al_bytes_free(d, outLen) }
         }
         guard result == 0, let ptr = outData, outLen > 0 else {
-            let err = outError != nil ? String(cString: outError!) : "unknown"
+            let err = outError != nil ? String(cString: outError!) : "unknown error"
             log("❌ Read \(iosPath) failed: \(err)")
             return nil
         }
@@ -491,16 +493,22 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         guard let pairing = pairingFilePath else { return false }
         var outError: UnsafeMutablePointer<CChar>? = nil
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let result = al_exploit_write_dir(pairing, sourceDir, targetDir, AirliftService.logCallback, ctx, &outError)
+        let result = al_exploit_write_dir(
+            pairing, sourceDir, targetDir,
+            AirliftService.logCallback, ctx, &outError
+        )
         defer { if let e = outError { al_string_free(e) } }
         guard result == 0 else {
-            let err = outError != nil ? String(cString: outError!) : "unknown"
+            let err = outError != nil ? String(cString: outError!) : "unknown error"
             log("❌ Write failed: \(err)")
             return false
         }
         return true
     }
     
+    // ============================================================
+    // AUTO BACKUP
+    // ============================================================
     private func autoBackupAccountsIfNeeded() -> Bool {
         if hasCompleteBackup {
             log("ℹ️ Original backup exists — keeping it.")
@@ -531,6 +539,9 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return true
     }
     
+    // ============================================================
+    // BYPASS
+    // ============================================================
     func bypassICloud() {
         log("[*] Starting Bypass...")
         guard autoBackupAccountsIfNeeded() else {
@@ -555,6 +566,9 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         try? FileManager.default.removeItem(at: tmp)
     }
     
+    // ============================================================
+    // RESTORE
+    // ============================================================
     func restoreOriginalAccounts() {
         log("[*] Restoring original accounts...")
         let fm = FileManager.default
