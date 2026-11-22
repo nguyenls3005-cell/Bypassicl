@@ -399,6 +399,4 @@ class AirliftService: ObservableObject {
         
         do {
             try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-            for file in targetFiles {
-                let srcURL = backupDir.appendingPathComponent(file)
-                guard fm.fileExists(at
+           
