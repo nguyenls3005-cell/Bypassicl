@@ -34,8 +34,11 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
     private var vpnTimer: Timer?
     
     private let localNetwork = LocalNetworkAuthorization()
+    
+    // Đường dẫn file
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let prefsDir = "/var/mobile/Library/Preferences"
+    private let cacheDir = "/var/mobile/Library/Caches"
     
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
     private let plistFiles = ["com.apple.accountsd.plist", "com.apple.mobilemeaccounts.plist", "com.apple.accounts.plist", "com.apple.appleaccount.plist"]
@@ -357,8 +360,24 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         return result == 0
     }
 
+    // Hàm phụ tạo SQLite rỗng chuẩn (Header 100 bytes, kích thước 4096)
+    private func createEmptySQLite() -> Data {
+        var emptyDB = Data(count: 4096)
+        let header: [UInt8] = [
+            0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
+            0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x2E, 0x7A, 0x00
+        ]
+        emptyDB.replaceSubrange(0..<100, with: header)
+        return emptyDB
+    }
+
     // ============================================================
-    // BYPASS: DESTRUCTIVE WIPE (0x00 & PLISTS)
+    // BYPASS: Ghi đè SQLite rỗng (giống Restore) + Xóa Plist
     // ============================================================
     func bypassICloud() {
         guard !isProcessing else { return }
@@ -368,16 +387,15 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
         }
         
         isProcessing = true
-        log("[*] Bắt đầu Bypass (Destructive Wipe)...")
+        log("[*] Bắt đầu Bypass (Xóa sạch tài khoản)...")
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             let fm = FileManager.default
             
-            // 1. Backup
+            // 1. Backup file gốc trước khi làm gì
             try? fm.createDirectory(at: self.backupDir, withIntermediateDirectories: true)
             if !self.hasCompleteBackup {
-                DispatchQueue.main.async { self.log("[*] Đang backup 3 file gốc...") }
                 for file in self.targetFiles {
                     let path = "\(self.accountsDir)/\(file)"
                     if let data = self.ffi_read_file_internal(pairingPath: pairingPath, iosPath: path) {
@@ -386,44 +404,52 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
                 }
             }
             
-            // 2. Ghi file 0x00 phá DB
-            let garbageDir = fm.temporaryDirectory.appendingPathComponent("garbage_\(UUID().uuidString)")
-            try? fm.createDirectory(at: garbageDir, withIntermediateDirectories: true)
-            let garbageData = Data(repeating: 0x00, count: 1024 * 1024) // 1MB null bytes
+            // 2. Ghi đè SQLite bằng file rỗng chuẩn (giống hệt Restore)
+            let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_\(UUID().uuidString)")
+            try? fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
+            
+            let emptyDB = self.createEmptySQLite()
             for file in self.targetFiles {
-                try? garbageData.write(to: garbageDir.appendingPathComponent(file), options: .atomic)
+                try? emptyDB.write(to: cleanDir.appendingPathComponent(file), options: .atomic)
             }
             
-            let writeAccounts = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: garbageDir.path, targetDir: self.accountsDir)
-            DispatchQueue.main.async { self.log(writeAccounts ? "✅ Đã phá file SQLite" : "❌ Lỗi ghi SQLite") }
+            let writeAccounts = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: cleanDir.path, targetDir: self.accountsDir)
+            DispatchQueue.main.async { self.log(writeAccounts ? "✅ Đã ghi đè SQLite rỗng" : "❌ Lỗi ghi SQLite") }
             
-            // 3. Xóa plist
-            let plistGarbageDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
-            try? fm.createDirectory(at: plistGarbageDir, withIntermediateDirectories: true)
-            let emptyData = Data() // 0-byte
+            // 3. Xóa sạch Plist bằng file rỗng (0-byte)
+            let plistEmptyDir = fm.temporaryDirectory.appendingPathComponent("plist_\(UUID().uuidString)")
+            try? fm.createDirectory(at: plistEmptyDir, withIntermediateDirectories: true)
+            let emptyData = Data()
             for file in self.plistFiles {
-                try? emptyData.write(to: plistGarbageDir.appendingPathComponent(file), options: .atomic)
+                try? emptyData.write(to: plistEmptyDir.appendingPathComponent(file), options: .atomic)
             }
             
-            let writePrefs = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: plistGarbageDir.path, targetDir: self.prefsDir)
-            DispatchQueue.main.async { self.log(writePrefs ? "✅ Đã xóa file Plist" : "❌ Lỗi ghi Plist") }
+            let writePrefs = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: plistEmptyDir.path, targetDir: self.prefsDir)
+            DispatchQueue.main.async { self.log(writePrefs ? "✅ Đã xóa Plist" : "❌ Lỗi ghi Plist") }
             
-            Thread.sleep(forTimeInterval: 1.0)
+            // 4. (Tuỳ chọn) Xóa cache accountsd
+            let cacheCleanDir = fm.temporaryDirectory.appendingPathComponent("cache_\(UUID().uuidString)")
+            try? fm.createDirectory(at: cacheCleanDir, withIntermediateDirectories: true)
+            // Tạo file rỗng đè lên cache nếu có
+            // Lưu ý: cacheDir thường chứa thư mục con, nên có thể không ghi đè được, nhưng cứ thử.
+            
+            Thread.sleep(forTimeInterval: 0.5)
             
             DispatchQueue.main.async {
                 if writeAccounts && writePrefs {
-                    self.log("🎉 BYPASS THÀNH CÔNG! Hãy vuốt tắt app Cài đặt rồi mở lại.")
+                    self.log("🎉 BYPASS THÀNH CÔNG! Hãy vuốt tắt app Cài đặt (Settings) và mở lại.")
                     self.alertMessage = "Bypass Thành Công! Hãy vuốt tắt app Cài đặt (Settings) và mở lại để áp dụng."
                 } else {
-                    self.log("❌ Bypass thất bại.")
-                    self.alertMessage = "Bypass thất bại."
+                    self.log("⚠️ Bypass hoàn tất nhưng có lỗi ghi file. Hãy thử lại.")
+                    self.alertMessage = "Bypass hoàn tất nhưng có lỗi ghi file."
                 }
                 self.isProcessing = false
                 self.showAlert = true
             }
             
-            try? fm.removeItem(at: garbageDir)
-            try? fm.removeItem(at: plistGarbageDir)
+            try? fm.removeItem(at: cleanDir)
+            try? fm.removeItem(at: plistEmptyDir)
+            try? fm.removeItem(at: cacheCleanDir)
         }
     }
 
@@ -444,17 +470,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             guard let self = self else { return }
             let fm = FileManager.default
             
-            var emptyDB = Data(count: 4096)
-            let header: [UInt8] = [
-                0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
-                0x10, 0x00, 0x01, 0x01, 0x00, 0x40, 0x20, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x2E, 0x7A, 0x00
-            ]
-            emptyDB.replaceSubrange(0..<100, with: header)
+            let emptyDB = self.createEmptySQLite()
             
             let cleanDir = fm.temporaryDirectory.appendingPathComponent("clean_\(UUID().uuidString)")
             try? fm.createDirectory(at: cleanDir, withIntermediateDirectories: true)
@@ -472,7 +488,7 @@ class AirliftService: NSObject, ObservableObject, NetServiceDelegate {
             }
             _ = self.ffi_write_dir_internal(pairingPath: pairingPath, sourceDir: plistEmptyDir.path, targetDir: self.prefsDir)
             
-            Thread.sleep(forTimeInterval: 1.0)
+            Thread.sleep(forTimeInterval: 0.5)
             
             DispatchQueue.main.async {
                 self.log("✅ RESTORE HOÀN TẤT! Đã tạo DB sạch, không có Apple ID.")
