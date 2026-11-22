@@ -14,7 +14,7 @@ class AirliftService: ObservableObject {
     @Published var lastDeviceName: String? = nil
     
     private var localNetBrowser: NWBrowser?
-    private var netServiceBrowser: NetServiceBrowser?
+    private var advertiseListener: NWListener?
     private var audioPlayer: AVAudioPlayer?
     private let accountsDir = "/var/mobile/Library/Accounts"
     private let targetFiles = ["Accounts3.sqlite", "Accounts3.sqlite-shm", "Accounts3.sqlite-wal"]
@@ -57,6 +57,9 @@ class AirliftService: ObservableObject {
         let service = Unmanaged<AirliftService>.fromOpaque(ctx).takeUnretainedValue()
         let sid = serviceId != nil ? String(cString: serviceId!) : "?"
         service.log("📡 Bonjour ready: \(sid) : \(port)")
+        DispatchQueue.main.async {
+            service.startBonjourAdvertise(name: "Bypassicl", port: UInt16(clamping: port))
+        }
     }
     
     // MARK: - Import Pairing File
@@ -88,38 +91,6 @@ class AirliftService: ObservableObject {
             }
         } catch {
             log("❌ Import pairing thất bại: \(error.localizedDescription)")
-        }
-    }
-    
-    func importPairingFromTextOrPath(_ raw: String) {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            log("❌ Dữ liệu nhập trống")
-            return
-        }
-        
-        do {
-            try FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
-            let dest = documentsDir.appendingPathComponent("pairingRecord.mobiledevicepairing")
-            
-            if FileManager.default.fileExists(atPath: trimmed) {
-                let data = try Data(contentsOf: URL(fileURLWithPath: trimmed))
-                try data.write(to: dest, options: .atomic)
-                DispatchQueue.main.async {
-                    self.pairingFilePath = dest.path
-                    self.log("✅ Đã nạp từ đường dẫn (\(data.count) bytes)")
-                }
-            } else if let data = trimmed.data(using: .utf8), trimmed.contains("plist") || trimmed.contains("<dict>") {
-                try data.write(to: dest, options: .atomic)
-                DispatchQueue.main.async {
-                    self.pairingFilePath = dest.path
-                    self.log("✅ Đã lưu nội dung pairing (\(data.count) bytes)")
-                }
-            } else {
-                log("❌ Đường dẫn không tồn tại hoặc nội dung không phải plist pairing")
-            }
-        } catch {
-            log("❌ Lỗi lưu pairing: \(error.localizedDescription)")
         }
     }
     
@@ -160,8 +131,7 @@ class AirliftService: ObservableObject {
             defer { al_pairing_result_free(&result) }
             
             DispatchQueue.main.async {
-                self.stopNetworkProbes()
-                self.stopKeepAliveAudio()
+                self.stopPairingServices()
                 self.isPairing = false
                 self.currentPin = nil
                 
@@ -183,13 +153,43 @@ class AirliftService: ObservableObject {
         }
     }
     
-    private func triggerLocalNetworkPrompt() {
-        stopNetworkProbes()
+    private func startBonjourAdvertise(name: String, port: UInt16) {
+        advertiseListener?.cancel()
+        advertiseListener = nil
         
-        let nsBrowser = NetServiceBrowser()
-        nsBrowser.includesPeerToPeer = true
-        nsBrowser.searchForServices(ofType: "_remotepairing-pairable-host._tcp.", inDomain: "local.")
-        netServiceBrowser = nsBrowser
+        let nwPort: NWEndpoint.Port = port > 0 ? (NWEndpoint.Port(rawValue: port) ?? .any) : .any
+        do {
+            let listener = try NWListener(using: .tcp, on: nwPort)
+            listener.service = NWListener.Service(
+                name: name,
+                type: "_remotepairing-pairable-host._tcp",
+                domain: "local."
+            )
+            listener.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .ready:
+                    if let actualPort = listener.port?.rawValue {
+                        self?.log("📣 Đang quảng bá Bonjour: \(name) : \(actualPort)")
+                    }
+                case .failed(let err):
+                    self?.log("⚠️ Quảng bá Bonjour lỗi: \(err.localizedDescription)")
+                default:
+                    break
+                }
+            }
+            listener.newConnectionHandler = { conn in
+                conn.cancel()
+            }
+            advertiseListener = listener
+            listener.start(queue: .main)
+        } catch {
+            log("⚠️ Không mở được listener quảng bá: \(error.localizedDescription)")
+        }
+    }
+    
+    private func triggerLocalNetworkPrompt() {
+        localNetBrowser?.cancel()
+        localNetBrowser = nil
         
         let browser = NWBrowser(
             for: .bonjour(type: "_remotepairing-pairable-host._tcp", domain: "local."),
@@ -204,11 +204,12 @@ class AirliftService: ObservableObject {
         browser.start(queue: .main)
     }
     
-    private func stopNetworkProbes() {
+    private func stopPairingServices() {
+        advertiseListener?.cancel()
+        advertiseListener = nil
         localNetBrowser?.cancel()
         localNetBrowser = nil
-        netServiceBrowser?.stop()
-        netServiceBrowser = nil
+        stopKeepAliveAudio()
     }
     
     private func startKeepAliveAudio() {
@@ -252,8 +253,7 @@ class AirliftService: ObservableObject {
     }
     
     func stopPairing() {
-        stopNetworkProbes()
-        stopKeepAliveAudio()
+        stopPairingServices()
         isPairing = false
         currentPin = nil
         log("⏹ Đã hủy trạng thái pairing")
